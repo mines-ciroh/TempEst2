@@ -1,0 +1,946 @@
+---
+title: "Detailed TempEst 2 Validation"
+author: "Daniel Philippus"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: pdf_document
+---
+
+This R Notebook walks through a set of validations for the TempEst 2 remote sensing-
+based river temperature model.
+The idea is that simply running the notebook (with required data present) will produce
+the full suite of validation data; this both makes the study results straightforwardly
+reproducible and assists in testing modifications to TempEst 2.
+
+The working directory is assumed to contain directories `Data` and `Figures`.
+Generation of error CDFs uses an `Ecoregions.csv` file, included, which maps
+gages to EPA Level I Ecoregions.
+
+For generating a PDF, to minimize runtime, chunks running the validations have
+stored results in CSVs and `eval` is set to `FALSE`, so knitting uses stored
+results.  These chunks can be run manually in order to replicate the results or
+inspect the raw data, since the data files are too large to include by default.
+Note that data *retrieval* is covered in the separate `demo.Rmd` notebook, since
+that is a routine part of using TempEst 2 and not specific to validation.
+
+The development dataset, `AllData.csv`, is included in the GitHub Releases page.
+The full CSV contains many rows with missing data; since all points are retrieved
+for all years, a large fraction of predictor observations do not overlap with
+gage coverage, and there are gage observations on cloudy days with missing predictors.
+Training and prediction are designed to work with missing data, since, in training,
+this allows monthly predictor means to be computed in the absence of gage coverage
+and observed seasonality to be computed in the absence of satellite coverage.
+However, including the missing rows in cross-validation below has very little impact
+on final prediction coverage and performance, at the expense of increased memory
+use and runtime, so by default missing observations are dropped when loading the
+data.
+
+# Performance Characteristics Covered
+
+This Notebook includes a wide range of tests for several performance characteristics
+of interest.  For the results reported here, all observations with missing data
+were dropped before beginning analysis; leaving them in produces marginally more
+coverage, since this may make it possible to compute required monthly means and
+the like that would otherwise be omitted because they do not overlap with validation
+gage observations, but the differences in coverage and performance are negligible
+in exchange for substantially increased computation time.
+
+Unless otherwise noted, performance characteristics are computed for each testing
+gage and global statistics are reported as the median across gages.  The median
+is used rather than the mean because several goodness-of-fit metrics, having a
+hard limit on the good-performance side, tend to be skewed, though the difference
+is modest. Skew is also the reason for reporting median RMSE rather than global
+RMSE, as the latter is highly sensitive to a few high-error outlier gages. The
+practice of reporting median gagewise rather than global RMSE has precedence in
+the literature, particularly for large-domain models, e.g. Wanders et al. (2019)
+introducing a global process-based stream temperature model.
+
+1. Gagewise cross-validation tests performance for individual ungaged sites,
+given the actual training gage network and training data that covers the time
+period of interest.  This is a good match for the typical TempEst 2 use case:
+a recently-trained model will have access to training data nearly up to the present,
+and the actual training network has few large ungaged regions.  A second analysis
+of the same test reports the NSE of the daily anomaly
+(temperature - mean day-of-year temperature), which allows the accuracy of variations
+to be considered separately from the accuracy of the mean.  This is useful
+for analyzing the accuracy of departures from the day-of-year mean (e.g.,
+identifying unseasonably warm/cold conditions) in comparison to either climatology
+(anomaly = 0 = mean anomaly, so any positive anomaly NSE outperforms climatology)
+or stationarity (anomaly = yesterday's anomaly; the accuracy of stationarity is
+computed for comparison).
+2. The "Coverage Range" section is not an actual test, but shows the range of
+training data.
+3. The Arid Southwest test uses a large region of the Southwest, which tends to
+be sparsely-gaged, as a test dataset while training on the rest of the CONUS. This
+serves as, in effect, a worst-case scenario for model performance in the region
+(worst-case because no such large region is entirely ungaged).
+4. The elevation test uses the top 5% of gages by elevation as a test set.  This
+evaluates the ability of the model to extrapolate upwards.  Note that the top 5%
+of gages cover about 40%, not 5%, of the elevation range (~1800-3000 m), since
+coverage is much sparser at high elevation.
+5. Spatial cross-validation is similar to the Arid Southwest test, but more general.
+To evaluate the model's performance for predictions in ungaged regions, the CONUS
+is divided into 16 (4x4) discrete spatial blocks, over which a leave-one-out cross-validation
+is run (predicting one region using a model trained on all the rest).
+6. The gage network density test recognizes that this data-driven model requires
+a substantial training dataset of gage observations in order to predict ungaged
+locations, and evaluates the required density of that training network.  This is
+done by running gagewise cross-validations on random subsets of the actual training
+gage network.
+7. Walk-forward validation tests the ability of the model to extrapolate forwards.
+The typical use case of TempEst 2 does not require extensive extrapolation in time,
+but it is useful to analyze that aspect of performance nonetheless.  The model
+is trained for all data up to a given year and then used to predict for all gages
+for the next year.
+8. Similar to the network density test, cross-validation performance using different
+fractions of the timeseries (5-year and 10-year) is compared to full-dataset
+performance.  This test is designed to assess options if the implicit stationarity
+of the seasonality component becomes a concern: is it feasible to use a 5- or 10-year
+subset of the training data which may better match seasonal characteristics?
+
+# Summary of Results
+
+## Gagewise Cross-Validation
+
+1. Overall median: RMSE 2.0 C, bias 0.1%, NSE 0.91 (median of 1404 observations). Global: RMSE 2.9 C, bias -0.3%, NSE 0.86 (2.2M observations).
+2. Daily anomaly (modeled temperature - mean modeled temperature for day-of-year): median NSE 0.45, compared to 0.24 for stationarity (anomaly = yesterday's anomaly) and 0.00 for climatology (anomaly = 0).
+3. Monthly mean: median RMSE 1.6 C, bias 0.1%, NSE 0.94 (median of 130 observations).  Compare TempEst 1 (monthly) at 1.7 C median RMSE.
+4. Error has a modest correlation with elevation, but remains reasonable at high elevation.  Error does not meaningfully correlate with water abundance, so performance is good for small rivers.
+5. In a map of gage performance, there are a few small high-error (RMSE > 5 C) clusters (a handful of gages) but no large poorly-performing regions, which is not to say there are no regional trends at all (e.g., most gages in the northern Basin and Range perform somewhat poorly, but not awfully).  Notably, reasonable performance is maintained throughout the Northwestern Forested Mountains, Mediterranean California, and the North American Deserts - though the latter has noticeably poorer overall performance and all three host poor-performing (RMSE > 5 C) hot spots.
+6. In most regions, the large majority of individual errors are <5 C and almost all < 10 C. North American Deserts have ~2% of errors <-10 C, likely corresponding to the cluster of poor-performing gages on the Colorado River.
+
+## Coverage Range
+
+Elevation covers 0-2900 m, with several thousand observations in the highest ~200 m but weighted towards ~0-500 m.  LST ranges from -30 to 60 C.  Observed stream temperature is dominated by 0-30 C, but there are a few thousand observations from 30-60 C.  Water abundance is weighted towards small rivers, with the mode bucket, at ~1M observations, being the single smallest (including streams too small to appear at all in the 10-m land cover dataset), but there are also several thousand observations where water abundance was >75%.
+
+## Arid Southwest Spatial Validation
+
+Median validation gage RMSE - with no training coverage in the region of interest - was 2.3 C, with a median bias of -3.7% and NSE of 0.87.  The overall performance penalty was modest, but lack of coverage in a large region may introduce some bias.  Presumably, this is due in part to a spatial signal which the kriging models cannot capture without training data.
+
+## High Elevation Spatial Validation
+
+High-elevation extrapolation performance is substantially degraded, though not unusably so, at a median RMSE of 3.1 C and bias of 25%.  Much of this is due to the extrapolation, not the elevation, as the same set of gages had much better global cross-validation performance (median RMSE 2.3 C, bias 11%).  The bulk of the high-elevation gages are also clustered fairly close together in the Rocky Mountains, so the extrapolation test prevents a spatial signal from being considered.  Within these gages, performance does not have any trend with respect to elevation, and the two highest-elevation gages (>2750 m) perform better than the median.
+
+To correct for the role of spatial signal, using >2200 m (less isolated) for testing, median RMSE drops to 2.4 C, but median bias is a bit higher at 27% and median NSE is worse, at 0.68 down from 0.83.  Thus, extrapolating in elevation seems to be a genuine challenge, alongside any effects from spatial signal.  Note that the performance (RMSE and bias) penalty for high-elevation extrapolation is similar between TempEst 2 (kriging, with an explicit seasonality model) and TempEst 1 (random forest), suggesting that high-elevation prediction is an intrinsic challenge for remote sensing-based, point-oriented stream temperature models (if not more broadly) rather than specific to the model implementation.
+
+The main source of the performance penalty seems to be underestimation of the autumn-winter seasonal anomaly and overestimation of the spring-summer anomaly.
+
+Across all high-elevation gages, the effect on key summary statistics is more muted:
+
+- Bias in cumulative degree days is smaller for most of the year, with day-of-year pbias around 0-10% and typically about 5%.  Bias is larger ($\pm$ 25%), but relative to a much smaller mean, from Julian day 0-150.
+- Across gages and years, the median error in maximum temperature is 1 C, with an interquartile range of -1.5 to 3.4 C.
+- Across gages and years, for minimum temperature those are 0.4 C and -0.7 to 1.6 C.
+- Across gages and years, for maximum 30-day mean temperature, those are 1 C and -1.1 to 3.3 C.
+
+Thus, while the overall bias is of concern, it does not seem to create a severe problem (in the typical case) for key summary data.
+
+## Contiguous Spatial Region Cross-Validation
+
+Generating predictions for a contiguous spatial region in which no training data are available produces a modest performance penalty, with a median RMSE of 2.3 C, bias of 1.1%, and NSE of 0.89. The worst-performing validation regions had median RMSE around 3 C and median bias up to 10%, while the best-performing regions had no appreciable performance penalty compared to global cross-validation.
+
+## Training Gage Network Density
+
+Interestingly, despite the role of spatial signal, training gage network density has a quite minimal impact on performance.  Even at just 10% density, median RMSE was less than 2.5 C, and there appeared to be almost no effect going from 75% to 100% density.  Compare this to TempEst 1 (random forest-based), which had a quite strong effect from density: at 10% network density, it had a median *monthly* RMSE of 2.5 C, performing worse for months than TempEst 2 did for days at the same density.  This suggests that the kriging approach is much more robust to sparse training data than a random forest, and in particular that the major components of CONUS-wide variability in seasonality and weather sensitivity are predictable by linear combinations of land cover, geography, and climate data.
+
+## Walk-Forward Validation
+
+TempEst 2 does have a very slight tendency to underpredict temperatures for the next year (median bias of -1.2%), contributing to a slightly larger median RMSE in walk-forward validation (2.2 C) than in cross-validation (2.0 C).  This performance penalty is insufficient to be a major concern, especially since TempEst 2 is designed for historical estimation, not projection, but with such a penalty a trained model can reasonably be used to estimate temperatures for a few years after training.  Since model training is quick and straightforward, a need to retrain the model every few years is not an obstacle to its use.
+
+## Timeseries Length
+
+Reduced timeseries length introduces a small performance penalty, with median RMSE of 2.2 C/NSE 0.89/bias -0.3% for 5 years.  Thus, if the small bias shown in walk-forward validation is a concern for a given use case, it is reasonable to train a model on a shorter time period around the period of interest.
+
+# Setup
+
+```{r setup}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE)
+
+library(tidyverse)
+library(hydroGOF)
+source("model.R")
+source("valfn.R")
+fn <- full.schema()
+
+performance <- function(pred) pred %>%
+  drop_na() %>%
+  summarize(
+      `RMSE (C)` = rmse(temp.mod, temperature),
+      `Percent Bias` = pbias(temp.mod, temperature),
+      R2 = cor(temp.mod, temperature)^2,
+      NSE = NSE(temp.mod, temperature),
+      N = n()
+  )
+
+progf <- "Data/FullCrossValidation_DropNA.csv"
+
+# Utility code: cross-validation by gage ID
+kfold <- function(data, k=5,
+                  proc=\(x) x %>% group_by(id) %>% performance,
+                  ...) {
+  data <- data %>%
+    group_by(id) %>%
+    mutate(cv = sample(1:k, 1)) %>%
+    ungroup()
+  map_dfr(1:k,
+          function(cvi) {
+            train <- filter(data, cv != cvi)
+            test <- filter(data, cv == cvi)
+            proc(
+              fn(train)(test)
+            )
+          })
+}
+
+kfold.stream <- function(data, procfn, progf, k=5) {
+  file.remove(progf)
+  kfold(data, k,
+        proc = \(x) {
+          write_csv(procfn(x), progf, append=file.exists(progf))
+          tibble()
+        })
+}
+```
+
+
+# Load Data
+
+```{r loaddata}
+data <- read_csv("AllData.csv", show_col_types = F) %>% drop_na
+```
+
+
+The map of gages shows that the coordinate extremes of CONUS (i.e. Maine,
+Florida, Southern California, and Washington) are covered with a wide range
+of coverage across the interior of the country.  There are also at least some
+gages in most large areas of other extremes, such as the arid Southwest, the
+high Rocky Mountains, the small slice of Tropical Wet Forest in Florida, and so
+on.  However, coverage does follow the distribution of USGS gages and therefore
+areas with few gages are sparsely covered.  The main area of concern for coverage
+is the arid Southwest; South Dakota also appears to have no or perhaps one gage,
+but its behaviors are presumably well-captured by the coverage in surrounding states.
+
+```{r plotgages}
+states <- map_data("state")
+
+data %>%
+  group_by(id) %>%
+  slice_head(n=1) %>% # first row of each gage only, don't need timeseries
+  ggplot() +
+  geom_polygon(aes(long, lat, group=group), data=states, fill="white",
+                 color="grey", size=2) +
+  aes(x=lon, y=lat) +
+  geom_point(size=2) +
+  theme_bw() +
+  labs(
+    x="Longitude",
+    y="Latitude"
+  )
+```
+
+# Global Validation Performance
+
+This section identifies overall model performance.  Gagewise performance statistics
+are extracted from a 10-fold cross-validation.
+
+Running this also gives the user an idea of TempEst 2 runtime.  This process
+involves 10 distinct training and prediction runs.  The full dataset has ~8M
+observations, but of those ~2M have overlapping gage and satellite coverage.
+
+Those 10 runs for 8M observations take ~50 minutes (5 minutes each), though the
+first half take 3 minutes each before it becomes memory limited.  Memory usage
+is about 8 GB.
+
+Without NAs, there are 2.2M observations for 1388 points and running it took about
+25 minutes (2.5 minutes each).  Memory usage hit 6.5 GB.
+
+```{r perfdata, eval=FALSE, warning=FALSE}
+tictoc::tic()
+kfold.stream(
+  data, drop_na, progf, k=10
+)
+tictoc::toc()
+```
+
+## Performance Summary
+
+With the drop_na version, performance is superb, at a median RMSE of 2.0 C and
+NSE of 0.90.  Most gages have ~3-5 years of data.
+
+Without drop_na, performance is more or less identical but it takes longer.
+Another 72 gages make it through, but relative to a baseline of ~1300 that does
+not seem worth the computational overhead.
+
+```{r}
+global.raw <- read_csv(progf, show_col_types=F)
+```
+```{r}
+global.cvp <- global.raw %>% group_by(id) %>% performance
+summary(global.cvp)
+```
+
+```{r}
+performance(global.raw)
+```
+
+
+## Anomaly Performance
+
+Median anomaly NSE is 0.45, which is about double that of the stationary version.
+
+```{r}
+global.raw %>%
+  group_by(id, day) %>%
+  mutate(anom = temperature - mean(temperature),
+         anom.mod = temp.mod - mean(temp.mod)) %>%
+  group_by(id) %>%
+  arrange(date) %>%
+  mutate(anom.st = lag(anom)) %>%
+  drop_na() %>%
+  summarize(AnomalyNSE = NSE(anom.mod, anom),
+            StationaryNSE = NSE(anom.st, anom),
+            ClimatologyNSE = NSE(rep(0, length(anom)), anom)) %>%
+  summary
+```
+
+## Monthly Performance
+
+Monthly performance approaches the NorWeST range, with a median RMSE of 1.6 C.
+The TempEst 1, monthly, model has a median RMSE of about 1.7 C, but it
+is much faster since it computes months directly instead of retrieving single days
+(30x more data).
+
+```{r}
+global.raw %>%
+  group_by(id, year, month = format(date, "%m")) %>%
+  summarize(across(c(temp.mod, temperature), ~mean(.x, na.rm=T))) %>%
+  group_by(id) %>%
+  performance %>%
+  summary
+```
+
+
+## Variable Correlations
+
+There are three key conclusions here:
+
+1. TempEst 2 does well, though a bit worse, for high elevation (gages up to 3000 m).
+2. TempEst 2 does well for small streams, with no identifiable minimum size.
+3. The particularly poorly-performing gage (RMSE ~ 43 C) is a massive outlier in
+mean temperature.  One of the gages is near Yellowstone, and if it is that gage
+it could be skewed by a hot springs, which TempEst 2 could not predict.
+
+```{r}
+global.raw %>%
+  group_by(id) %>%
+  summarize(RMSE = rmse(temp.mod, temperature),
+            `Elevation (m)` = first(elevation),
+            `Water` = first(water),
+            `Humidity (kg/kg)` = mean(humidity),
+            `Temperature (C)` = mean(temperature)) %>%
+  pivot_longer(
+    -c(id, RMSE),
+    names_to="Variable",
+    values_to="Value"
+  ) %>%
+  ggplot() +
+  aes(
+    x=Value,
+    y=RMSE
+  ) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  facet_wrap(~Variable, nrow=2,
+             strip.position = "bottom",
+             scales="free_x") +
+  labs(
+    x=NULL,
+    y="Gage RMSE (C)"
+  ) +
+  theme_std()
+```
+
+## Map
+
+The key result from the map is that there are no large regional hot spots for
+poor performance, although there are a few visible clusters on the order of ~5
+gages, and there are less-pronounced regional trends (e.g., superb performance
+in northwestern Washington).
+
+If the scaling settings are removed, it can be seen that the worst-performing gage
+is indeed at the northwestern corner of Wyoming, i.e., the Yellowstone area. With
+the scaling settings (putting the top of the scale at 5 C), this region hosts a
+cluster of relatively high-error gages.
+
+```{r}
+pdat <- global.raw %>% group_by(id, lon, lat) %>% performance
+```
+
+```{r}
+plt <- plot.eco() +
+  geom_point(aes(lon, lat, color=`RMSE (C)`), data=pdat, size=2) +
+  scale_color_viridis_c(
+                        limits=c(0,5),
+                        breaks=0:5,
+                        labels=c(0:4, "5+"),
+                        oob=scales::squish,
+                        guide = guide_colorbar(barwidth=unit(100, "points"),
+                                               barheight=unit(10, "points"),
+                                             title.position = "top",
+                                             direction = "horizontal")) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical",
+    legend.key.size = unit(4, "points"),
+    legend.text = element_text(size=8),
+    legend.box = "vertical",
+    legend.margin = margin(),
+    legend.box.margin = margin()
+  ) +
+  labs(x="Longitude",
+       y="Latitude",
+       color="Gage RMSE (C)",
+       fill="Ecoregion")
+
+print(plt)
+ggsave("Figures/ErrMap.png", width=6.5, height=5, units="in", bg="white")
+```
+
+## CDFs
+
+```{r}
+global.alerr <- global.raw %>%
+  mutate(Error = temp.mod - temperature) %>%
+  ungroup()
+```
+
+```{r}
+plt <- global.alerr %>%
+  left_join(read_csv("Ecoregions.csv"), by="id") %>%
+  filter(!is.na(ecoregion)) %>%
+  mutate(ecoregion = str_to_title(ecoregion)) %>%
+  ggplot() +
+  aes(Error) +
+  theme_std() +
+  stat_ecdf() +
+  facet_wrap(~ecoregion, nrow=1, strip.position = "top",
+              labeller = label_wrap_gen(width=15)) +
+  scale_x_continuous(limits=c(-30,
+                              30)) +
+  labs(
+    x="Prediction Error (C)",
+    y="Cumulative Probability"
+  )
+print(plt)
+ggsave("Figures/ErrorCDF.png", plt, width=6.5, height=3, units="in", bg="white")
+```
+
+# Coverage Range
+
+Here, I simply plot the range of some key variables covered by the dataset.  One
+faceted plot is generated for a list of variables, so the user can easily add
+or remove variables if they are so inclined.  I selected observed temperature,
+elevation, land surface temperature, humidity, and water abundance.  Note that this
+is a plot of *observations*, not *gages*.  Also, a log scale is used on the Y-axis
+so that differences among rarer points are clear when more common values can have
+thousands of observations.
+
+Water abundance serves as a rough proxy for river width, though sinuosity and
+other water bodies will cause the abundance to be higher than it should be for
+a straight river.  Water abundance of 0 means the river is consistently less
+than 10 m wide (and thus does not appear in the 10-m resolution land cover
+dataset), and water abundance of 1 means that the river is at least 1 km wide.
+
+Of note:
+
+- Of the 2.2M observations, about 1M are in the smallest water abundance bucket.
+- Gages are heavily weighted towards low elevation, but there are tens of thousands
+of observations above 2,000 m and about 4,000 observations in the two highest-
+elevation buckets, near 3,000 m.
+- Observed temperatures are relatively close to evenly-distributed (though on
+ a log scale) from 0-30 C, with a thousand or so observations up to 60 C.
+- Land surface temperatures have thousands of observations in each bucket from
+~20-50 C, with tens to hundreds for another 10 C outside of that range on each end.
+
+In short, there is extensive coverage over climate conditions. Builtup was, after
+testing for performance impact, not retrieved for prediction and so cannot be shown
+here, but there are gages in urban areas which do not have unusually poor performance,
+which can be seen on the gage performance map. For example, several of the Colorado
+gages just on the easternn edge of the Northwestern Forested Mountains are urban
+and all have roughly average performance.
+
+```{r}
+data %>%
+  select(
+    `Observed Temperature (C)` = temperature,
+    `Elevation (m)` = elevation,
+    `Land Surface Temperature (C)` = lst,
+    `Specific Humidity (kg/kg)` = humidity,
+    `Water Abundance` = water
+  ) %>%
+  pivot_longer(everything(),
+               names_to="Variable",
+               values_to="Value") %>%
+  ggplot() +
+  aes(x=Value) +
+  geom_histogram() +
+  scale_y_log10() +
+  facet_wrap(~Variable, strip.position = "bottom", scales="free") +
+  theme_std() +
+  labs(
+    x=NULL,
+    y="Frequency (log scale)"
+  )
+```
+
+
+# Arid Southwest Performance
+
+To test the effect of sparsity on performance in the arid Southwest, I separate
+gages with a latitude less than 38 degrees N and a longitude between -115 and -100
+degrees E, mainly covering Arizona, New Mexico, and part of Texas.  This region
+was selected based on visual inspection of the map above to cover part of the
+arid Southwest which is sparsely-gaged but still actually does have gages to test
+on.  The gages in this region are withheld from the training dataset and used for
+validation.  Note that the training dataset does contain some other gages in the
+arid Southwest, such as in Nevada, but not many and none in quite a large region.
+Also, the validation gages include a cluster of poorly-performing gages around
+the major Colorado River reservoirs in Arizona.
+
+This single, full training and prediction run takes a little over 2 minutes.
+
+Performance is moderately worse than average at a median RMSE of 2.3 C (over 39
+gages).  There is a slight tendency towards negative bias (median -4%).
+
+
+```{r southwest.mod, eval=FALSE}
+tictoc::tic()
+fn(filter(data,
+                  lat > 38 | lon < -115 | lon > -100))(filter(data,
+                                                              lat < 38,
+                                                              lon > -115,
+                                                              lon < -100)) %>%
+  write_csv("Data/Southwest.csv")
+tictoc::toc()
+```
+
+```{r southwest.perf}
+perf <- performance(read_csv("Data/Southwest.csv", show_col_types = F) %>%
+                      group_by(id))
+summary(select(perf, -id))
+
+perf %>%
+  pivot_longer(-c(id, N), names_to="GOF", values_to="Value") %>%
+  ggplot() +
+  aes(y=Value) +
+  geom_boxplot() +
+  facet_wrap(~GOF, nrow=1, strip.position = "left",
+             scales="free") +
+  theme_std() +
+  labs(
+    y=NULL
+  )
+```
+
+# Elevation Performance
+
+Another possible concern is high-altitude streams.  Therefore, with a similar
+approach to arid Southwest, I train the model excluding streams above 1800 m,
+which is roughly the 95th percentile, and test its performance on the remaining
+group.  Many of the testing gages are clustered together, so the test performance
+is influenced by both (elevation) extrapolation and (horizontal) spatial signal,
+so a second test shrinks the testing dataset further in exchange for using nearby
+training gages, accounting for spatial signal.
+
+Performance for high elevation is within reason, at a median RMSE of 3.1 C, 
+and the overall trend shape is fitted well (median R2 of 0.91), but there is a
+tendency towards fairly substantial positive bias, with a median of 25%.
+
+There are two possible sources of the error:
+
+- Predicting Intercept (mean temperature), which is the only term that can translate
+into a global bias.
+- Predicting other seasonality terms, coupled with a time-of-year skew in observations
+or predictions.  This would allow zero-mean terms to affect the bias.
+
+This can be differentiated based on day-of-year biases.  If Intercept is systematically
+too high, then all days-of-year should have similar absolute bias.  Otherwise,
+absolute biases will be skewed towards the problematic day-of-year.
+
+In the plot of bias by day-of-year bucket, we see that, although there is some
+overall bias, there is a systematic tendency towards both large positive biases
+and large numbers of observations from Julian day 200-300 (late June-October).
+This, combined with a tendency towards underestimates in the winter and spring,
+suggests that the spring-summer anomaly is being overestimated and the autumn-winter
+anomaly underestimated.
+
+Absolute biases reach as high as 1.5 C in late winter and mid-autumn.
+
+```{r}
+quantile(
+  (data %>% group_by(id) %>% slice_head(n=1))$elevation,
+  0.05 * (1:20),
+  na.rm=T
+)
+```
+
+```{r elev}
+pred <- 
+  fn(filter(data, elevation < 1800))(filter(data, elevation >= 1800))
+```
+
+```{r}
+perf <- performance(group_by(pred, id, lon, lat)) %>% ungroup()
+summary(select(perf, -c(id, lon, lat)))
+```
+
+```{r}
+left_join(perf,
+          data %>% group_by(id) %>% slice_head(n=1) %>% ungroup() %>%
+            select(id, elevation),
+          by="id") %>%
+  ggplot(aes(elevation,
+             `RMSE (C)`
+             # `Percent Bias`
+             )) + geom_point() + geom_smooth(method="lm")
+```
+
+
+```{r}
+global.raw %>% filter(elevation > 1800) %>% group_by(id) %>% performance %>%
+  summary
+```
+
+
+```{r}
+pred %>%
+  group_by(d10 = 10 * round(day/10)) %>%
+  summarize(Bias = mean(temp.mod - temperature, na.rm=T),
+            N = n()) %>%
+  ggplot(aes(d10, Bias, size=N)) +
+  geom_point()
+```
+
+## Map
+
+```{r}
+plot.eco() +
+  geom_point(aes(lon, lat, color=`RMSE (C)`), data=perf, size=2) +
+  scale_color_viridis_c(
+                        limits=c(0,5),
+                        breaks=0:5,
+                        labels=c(0:4, "5+"),
+                        oob=scales::squish,
+                        guide = guide_colorbar(barwidth=unit(100, "points"),
+                                               barheight=unit(10, "points"),
+                                             title.position = "top",
+                                             direction = "horizontal")) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical",
+    legend.key.size = unit(4, "points"),
+    legend.text = element_text(size=8),
+    legend.box = "vertical",
+    legend.margin = margin(),
+    legend.box.margin = margin()
+  ) +
+  labs(x="Longitude",
+       y="Latitude",
+       color="Gage RMSE (C)",
+       fill="Ecoregion")
+```
+
+## Cluster/Spatial Signal Test
+
+To test extrapolation alone, without overlapping this with the lack of spatial
+signal from nearby gages (not to mention the very large range of the extrapolation),
+a second test uses a cutoff of 2200 m (about 12 gages).  In the above plot, gages
+in that range mostly have an RMSE of 2-4 C.
+
+```{r}
+fn(filter(data, elevation < 2200))(filter(data, elevation >= 2200)) %>%
+  group_by(id) %>%
+  performance() %>%
+  ungroup() %>%
+  select(-id) %>%
+  summary
+```
+
+
+## Additional Elevation Performance Metrics
+
+Given the prevalence of non-negligible biases at high elevation, it is important
+to characterize the impacts of those biases on certain key temperature metrics.
+Here, absolute bias is computed for minimum and maximum temperatures and maximum 30-day
+mean temperature, and percent bias (due to non-readily-comparable units) for
+cumulative degree days throughout the year.
+
+```{r}
+tstats <- pred %>%
+  group_by(id, year) %>%
+  arrange(day) %>%
+  mutate(across(c(temp.mod, temperature),
+                list(
+                  # Zero-padding the left is OK because max temperatures will
+                  # not occur in January
+                  "30" = ~rollmean(.x, 30, fill = 0, align = "right"),
+                  "cdd" = cumsum
+                )
+                ))
+tstats %>%
+  summarize(
+    MinBias = min(temp.mod) - min(temperature),
+    MaxBias = max(temp.mod) - max(temperature),
+    M30Bias = max(temp.mod_30) - max(temperature_30)
+  ) %>%
+  select(-c(id, year)) %>%
+  summary
+
+tstats %>%
+  group_by(day) %>%
+  summarize(cddbias = pbias(temp.mod_cdd, temperature_cdd)) %>%
+  ggplot(aes(day, cddbias)) +
+  geom_point()
+```
+
+
+
+# Spatial Cross-Validation
+To test the importance of spatial coverage in more detail, I divide the gages
+into a 4x4 grid - determined by observation density, not fixed spatial ranges - and
+run a leave-one-out cross-validation on the groups.  This is
+leave-one-out rather than k-fold so it does not use the above utility function.
+
+There is a moderate performance penalty (median RMSE = 2.3 C), but bias remains low.
+A few groups do show noteworthy median bias, but none more than ~10%: 1x2, 2x1,
+4x1, and 4x2, corresponding to the southern Southwest, central California,
+the northern Pacific Northwest, and the northern Mountain West.
+
+```{r spat.grp}
+spdat <- data %>%
+  mutate(
+    latrank = ntile(lat, 4),
+    lonrank = ntile(lon, 4),
+    Group = paste0(latrank, "x", lonrank)
+  )
+spgroups <- spdat %>%
+  select(id, Group) %>%
+  group_by(id) %>%
+  slice_head(n=1) %>%
+  ungroup()
+spdat %>%
+  group_by(id) %>%
+  slice_head(n=1) %>% # first row of each gage only, don't need timeseries
+  ggplot() +
+  geom_polygon(aes(long, lat, group=group), data=states, fill="white",
+                 color="grey", size=2) +
+  aes(x=lon, y=lat, color=Group) +
+  geom_point(size=2) +
+  scale_color_viridis_d(end=0.9) +
+  theme_bw() +
+  labs(
+    x="Longitude",
+    y="Latitude",
+    color="Spatial Group"
+  )
+```
+
+```{r spat.cv, eval=FALSE, warning=FALSE}
+if (file.exists("Data/SpatialCV.csv"))
+  file.remove("Data/SpatialCV.csv")
+
+walk(
+  unique(spdat$Group),
+  function(grp) {
+    fn(filter(spdat, Group != grp))(filter(spdat, Group == grp)) %>%
+      group_by(Group, id) %>%
+      performance %>%
+      write_csv("Data/SpatialCV.csv",
+                append=file.exists("Data/SpatialCV.csv"))
+  }
+)
+```
+
+```{r}
+cv.perf <- read_csv("Data/SpatialCV.csv", show_col_types = F) %>%
+  left_join(spgroups, by="id")
+```
+
+```{r}
+summary(select(cv.perf, -id, -Group, -N))
+plt <- cv.perf %>%
+  pivot_longer(-c(id, Group, N),
+               names_to="GOF",
+               values_to="Value") %>%
+  filter(
+    (GOF != "NSE" | Value >= -1),
+    (GOF != "RMSE (C)" | Value <= 10)
+  ) %>%
+  ggplot() +
+  aes(x=Group,
+      y=Value) +
+  geom_boxplot() +
+  facet_wrap(~GOF,
+             ncol=2,
+             strip.position = "left",
+             scales="free") +
+  theme_vert() +
+  labs(
+    x="Group",
+    y=NULL
+  )
+print(plt)
+ggsave("Figures/SpatialCV.png", plt, width=6.5, height=4, units="in", bg="white")
+```
+
+# Testing Gage Network Density
+The default dataset density, of about 1400 gages across the contiguous United
+States, is a bit more than 1 gage per 10,000 square km.  For each sample proportion,
+the test is run 10 times to reduce uncertainty associated with sample selection.
+
+
+```{r}
+density.run <- function(data,
+                        densities = c(0.1, 0.25, 0.5, 0.75, 1),
+                        runs = 10) {
+  ids <- unique(data$id)
+  walk(densities,
+          function(density) {
+            walk(1:runs,
+                    function(rx) {
+                      # This is a long-running process, and it is possible that
+                      # some samples' data coverage will cause the cross-validation
+                      # to fail.  We do not want that to crash the entire process,
+                      # and a single failure only costs 10% of the data for each
+                      # density level.
+                      safely(
+                        \()
+                        kfold.stream(
+                          filter(data, id %in% sample(ids, as.integer(
+                            density * length(ids)
+                          ))),
+                          \(x) performance(group_by(x, id)) %>% mutate(Density =
+                                                                         density) %>%
+                            relocate(Density),
+                          paste0("Data/Density/Run_", as.integer(density *
+                                                                   100),
+                                 "_", rx, ".csv")
+                        )
+                      )()
+                    })
+          })
+}
+```
+```{r eval=FALSE, warning=FALSE}
+density.run(data)
+```
+
+```{r}
+ddat <- map_dfr(list.files("Data/Density/", full.names=T),
+                ~read_csv(.x, show_col_types = F))
+```
+
+```{r}
+plt <- ggplot(ddat) +
+  aes(x=as.factor(Density*100),
+      y=`RMSE (C)`) +
+  geom_boxplot() +
+  scale_y_continuous(limits=c(0,10), oob = scales::squish) +
+  geom_smooth(method="lm") +
+  theme_std() +
+  labs(
+    x="Density Percentage",
+    y="Gage RMSE (C)"
+  )
+print(plt)
+ggsave("Figures/Density.png", plt, width=6.5, height=3, units="in", bg="white")
+```
+
+# Walk-Forward Validation
+
+Walk-forward validation is a critical concern for the SCHEMA model, since SCHE
+could be susceptible to non-stationarity and it is unclear whether MA can
+compensate.  It will also be important to check trends in performance over time.
+The first prediction year is 2003, rather than 2002 (beginning from 2001), to
+avoid issues with insufficient data coverage.
+
+```{r eval=FALSE, warning=FALSE}
+fn <- full.schema()
+df <- "Data/WalkForward_byYear.csv"
+file.remove(df)
+wfv <- walk(2003:2022,
+        function(yr) {
+          train <- filter(data, year < yr)
+          test <- filter(data, year == yr)
+          write_csv(performance(
+            fn(train)(test) %>% group_by(id)
+          ) %>%
+            mutate(Year = yr),
+          df,
+          append = file.exists(df))
+          print(yr)
+        })
+```
+
+```{r}
+wfv <- read_csv("Data/WalkForward_byYear.csv")
+```
+
+
+```{r}
+summary(wfv)
+```
+
+```{r}
+ggplot(wfv, aes(as.factor(Year), `Percent Bias`)) +
+  geom_boxplot() +
+  scale_y_continuous(limits=c(-100, 100), oob = scales::squish) +
+  geom_smooth(method="lm", se=TRUE)
+```
+
+# Timeseries Length Sensitivity
+
+Apart from performance effects, training with shorter timeseries does provide a
+substantial advantage in runtime and memory use.  The first five-year runs took
+1-2 minutes per iteration (a sublinear but substantial improvement), with
+total memory usage of ~2 GB dominated by simply having the data in memory.  By
+comparison, the full 22-year timeseries cross-validation reaches a peak memory
+usage of ~8 GB and starts at ~3 minutes per iteration before becoming memory-limited.
+("Iteration" here refers to one train-test run within the cross-validation, so
+a 5-fold cross-validation involves 5 iterations.)
+
+Sublinear runtime improvement is to be expected, since the kriging components have
+runtime based on the number of points, not the number of observations, although
+the number of observations does affect all preprocessing steps (e.g., summarizing,
+site-specific regressions).  Among individual 5- and 10-year tests, the runtime
+scaled roughly with the total number of gages with coverage in the period of
+interest (e.g., 2015-2020 had roughly twice as many gages as 2000-2005 and took
+roughly twice as long).
+
+```{r eval=FALSE}
+yr0 <- 2000
+addit <- 20  # we want full-length blocks only, so exclude 2021-2023
+for (len in c(5, 10, 20)) {
+  # E.g., 2005, 2010, 2015, 2020.  Works if len divides addit.
+  for (end in yr0 + 1:(addit/len)*len) {
+    start <- end - len
+    kfold.stream(
+      filter(data, year > start, year <= end),
+      procfn = \(x) {
+        performance(group_by(x, id)) %>%
+          mutate(Length = len) %>%
+          relocate(Length)
+        },
+      progf = paste0("Data/TSLen/Len", len, "_", start, ".csv")
+    )
+  }
+}
+```
+```{r}
+map_dfr(list.files("Data/TSLen", full.names=TRUE),
+        ~read_csv(.x, show_col_types = F)) %>%
+  group_by(Length) %>%
+  summarize(across(-id, ~median(.x, na.rm=T)))
+```
+
+

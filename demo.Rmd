@@ -1,0 +1,287 @@
+---
+title: "TempEst 2 Demo"
+author: "Daniel Philippus"
+date: "`r format(Sys.Date(), format='%b %d, %Y)')`"
+output: pdf_document
+---
+
+This is a quick demo of how to use the TempEst 2 model code.  Dependencies are
+`tidyverse` and `fields`, both imported by `model.R`.
+
+```{r warning=FALSE, message=FALSE}
+source("model.R")
+```
+
+
+# Earth Engine Data Retrieval
+
+TempEst 2 comes with a Python script for automatically retrieving predictor
+data from Google Earth Engine.  This requires that you have a Google Earth Engine
+account and have local Earth Engine access set up for Python on your computer,
+though it should be straightforward to modify for use in Google Collaboratory.
+
+For that script, it is simply necessary to specify a date range of interest and
+points of interest.  Examples are included for the format of the points of interest.
+Then, the function `getAllTimeseries()` will retrieve a series of CSVs (one
+for each timestep) in Google Earth Engine.  These CSVs should be joined together
+into one data frame **before** making predictions, as TempEst 2 needs to analyze
+long-term data to generate seasonality estimates.  Otherwise, the only modification
+is to add a `day` column (e.g., `as.integer(format(date, "%j")))`).
+
+```{r}
+data <- map_dfr(
+  list.files("GEEData/", full.names = T),
+  \(fn) read_csv(fn, col_types="cDddddddddd") %>%
+    mutate(day = as.integer(format(date, "%j"))) %>%
+    filter(lst > -273)  # filters errors
+)
+```
+
+
+# Prediction with a Trained Model
+
+TempEst 2 comes with a pretrained model, `model.rda`.  Loading this RData file
+will create a `model` function.  This function takes in the predictor data frame
+and adds the columns `temp.doy` (day-of-year mean temperature), `temp.anom`
+(daily anomaly relative to day-of-year mean, i.e., de-seasoned), and `temp.mod`
+(overall modeled temperature for each day, the sum of the previous two).
+
+```{r message=FALSE}
+load("model.rda")
+pred <- model(data) %>% drop_na
+```
+
+```{r message=FALSE}
+pred %>%
+  group_by(id, lon, lat) %>%
+  summarize(
+    meanT = mean(temp.mod),
+    range = max(temp.mod) - min(temp.mod)
+  ) %>%
+  ggplot(aes(lon, lat, size=range, color=meanT)) +
+  geom_point() +
+  scale_size_continuous(range=c(2, 10)) +
+  scale_color_viridis_c(option = "magma") +
+  theme_bw() +
+  labs(
+    x = "Longitude",
+    y = "Latitude",
+    color = "Mean Temperature (C)",
+    size = "Temperature Range (C)",
+    title = "Colorado Prediction Points"
+  )
+```
+
+# Training a Model
+
+The data requirements are the same, except the data must also have a `temperature`
+column for daily mean temperature.  For TempEst 2 development, this was retrieved
+from USGS gages.
+
+Using a hypothetical `indat`, then, just run:
+
+```model <- full.schema()(indat)```
+
+Note the empty parentheses; the arguments to `full.schema` are the seasonality
+and anomaly model functions to use (defaults provided), and then it returns
+another function, which takes training data as an argument, which returns a
+model function as above.  This means it is possible to use your own functions
+for either of those components.
+
+## Full Demo
+
+For building the PDF, this demo used pre-downloaded data which is too big for
+GitHub.  However, the process is shown below, assuming GEE data have been downloaded
+to a `GEEData` folder and have IDs matched to USGS gage IDs.
+
+For testing, these data had already been downloaded to `GageTemps.csv`, so that
+portion is not run.
+
+```{r}
+library(tidyverse)
+```
+
+
+### USGS Data Downloading
+
+Gage data retrieval can fail due to network issues, so it's advisable
+to run this in a way that makes it easy to go back and try again.  That is ignored
+here.  Running with a timeout is also helpful (`withTimeout` from `R.utils`).
+
+Writing incrementally, instead of collecting a single data frame, helps with
+keeping memory use down over many gages and allows the process to be resumed
+if it crashes.
+
+```{r}
+library(dataRetrieval)
+gage.ids <- c("10343500")  # provide a list of IDs here... this one is Sagehen Creek, CA.
+gage.file <- "GageDataDemo.csv"
+start <- "2001-01-01"
+end <- "2023-12-31"
+var.temp <- "00010"
+
+walk(gage.ids,
+     \(gid) {
+       readNWISdv(gid, var.temp, start, end) %>%
+         select(id = site_no,
+                date = Date,
+                temperature = X_00010_00003) %>%
+         mutate(year = as.integer(format(date, "%Y")),
+                day = as.integer(format(date, "%j"))) %>%
+         select(id, date, year, day, temperature) %>%
+         write_csv(gage.file, append = file.exists(gage.file))
+     })
+```
+
+```{r}
+gage.data <- read_csv(gage.file)
+```
+
+```{r}
+ggplot(gage.data, aes(date, temperature)) +
+  geom_line() +
+  theme_bw() +
+  labs(
+    x="Date",
+    y="Daily Mean Temperature (C)"
+  )
+```
+
+
+### Load Gage Data
+
+This loads the actual gage data used for analysis, not the demo above.  This has
+some technical debt, so it's handled a bit differently to convert it into the
+equivalent format above.  There are 6 million observations over 22 years at 1,442
+gages, after removing obviously erroneous observations (temperature > 100 or < 0).
+
+```{r}
+gage.data <- read_csv("GageTemp.csv", col_types = "cicd") %>%
+  extract(time, "day", "([0-9]+)", convert=TRUE) %>%
+  mutate(
+    date = as.Date(paste0(year, day), format="%Y %j")
+  ) %>%
+  select(id, date, temperature) %>%
+  filter(temperature >= 0, temperature <= 100)
+summary(gage.data)
+length(unique(gage.data$id))
+```
+
+### Load Spatial Data
+
+This has different column structure than the example above, since it was the intial
+analysis dataset and variables were retrieved which later turned out to be irrelevant.
+
+The spatial data has 4.6M observations for 1506 points and 22 years.
+
+```{r eval=FALSE}
+spat.data <-
+  map_dfr(
+    list.files("FullGEE/", pattern = "AllPoints*", full.names = T),
+    ~ read_csv(., col_types = "cDddddddddddddddddddd")
+  ) %>%
+  select(id:elevation,
+         lst = lst_day, humidity,
+         water, shrubland, grassland, barren) %>%
+  mutate(year = as.integer(format(date, "%Y")),
+         day = as.integer(format(date, "%j"))) %>%
+  filter(lst > -273, humidity >= 0) %>%  # remove missing data
+  drop_na()
+write_csv(spat.data, "SpatialData.csv")
+```
+```{r}
+spat.data <- read_csv("SpatialData.csv",
+                      col_types = "cDddddddddddii") %>%
+  # There are two redundant gages where an old gage was replaced.
+  # Kriging does not work with non-unique points.  Easy solution: remove the
+  # older gage.
+  filter(
+    !(id %in% c("420853121505500", "421209121463000"))
+  )
+```
+```{r}
+summary(spat.data)
+length(unique(spat.data$id))
+```
+
+
+### Combine Data
+
+For training the model, do *not* remove NAs from the combined dataset initially.
+The model uses a variety of monthly and long-term means in the spatial data, so
+spatial coverage that is not matched to gage coverage remains valuable, and gage
+coverage not matched to spatial coverage is useful for fitting seasonal conditions.
+
+The full dataset contains ~8.4 million observations, but only ~2.2 million of those
+have fully overlapping coverage.  Many gages do not have continuous coverage for
+the full period of interest, and it is nearly guaranteed that some days and points
+will not have satellite coverage (cloudy).
+
+```{r eval=FALSE}
+data <- full_join(spat.data, gage.data,
+                  by=c("id", "date"))
+write_csv(data, "AllData.csv")
+```
+```{r}
+data <- read_csv("AllData.csv", col_types = "cDdddddddddiid")
+```
+
+### Building a Model
+
+Usually, the objective would be to build a predictive model, in which case we
+can leave the arguments to `full.schema` empty (defaults). In this case, we
+add the `rtn.model=TRUE` argument, which returns a list of the model components
+instead so those can be inspected.  This version does not support prediction.
+
+The default model components are several kriging models, so we can inspect
+meaningful coefficients directly.  For example, this could be used to retrieve
+the trend in mean annual temperature with respect to river width (approximated by
+water abundance), all else being equal.
+
+```{r warning=FALSE, message=FALSE}
+model <- full.schema(rtn.model=TRUE)(data)
+save(model, file="krigs.rda")
+```
+
+To build one that supports prediction:
+
+```{r eval=FALSE}
+model <- full.schema()(data)
+save(model, file="model.rda")
+```
+
+### Inspecting Model Components
+
+Using `rtn.model=TRUE`, each entry in the list is a kriging model.  Some items
+of interest are shown below, followed by code to summarize model parameters.
+
+```{r}
+model$Intercept$summary
+summary(model$Intercept)$fixedEffectsTable  # intercept, lon, lat, then fixed terms
+colnames(model$Intercept$Z)
+```
+
+
+```{r}
+modstats <- map_dfr(model,
+                    ~as_tibble_row(.x$summary),
+                    .id = "Component")
+write_csv(modstats, "SpatialModel.csv")
+select(modstats, Component, aRange, sigma2, lambda, tau)
+summary(select(modstats, aRange, sigma2, lambda, tau))
+```
+
+```{r}
+modcoefs <- map_dfr(model,
+                    \(mod) {
+                      as_tibble(summary(mod)$fixedEffectsTable) %>%
+                        mutate(Variable = c("Intercept", "lon", "lat",
+                                            colnames(mod$Z))) %>%
+                        relocate(Variable)
+                    },
+                    .id = "Component")
+write_csv(modcoefs, "FixedModel.csv")
+modcoefs
+```
+
+
