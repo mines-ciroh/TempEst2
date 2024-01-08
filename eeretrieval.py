@@ -18,8 +18,6 @@ import datetime as dt
 # [[[lon, lat], gage ID]], e.g.
 # datapts =  [[[-74.9658333,39.41916667], "01412000"]]
 from datapts import datapts
-# from coloradopts import co_datapts, co_pts
-from GreatLakes import gl_pts
 
 # Trigger the authentication flow.
 # ee.Authenticate()
@@ -237,23 +235,8 @@ times = [(str(x), str(y+1),
            for x in range(2001, 2024)
            for y in range(365)]
 
-# 60 seconds works for 1300 points.  Scale accordingly.  The goal of the wait
+# 20 seconds works for 1300 points.  Scale accordingly.  The goal of the wait
 # is to avoid exceeding 3000 jobs.
-# At 10 seconds/1200, accumulation rate is ~1/6.
-# Made it through 2020_191 for first_half/second_half, then failed due to precip.
-# 2020_192 is index 7126.
 if __name__ == "__main__":
-    # print(len(gl_pts))
-    pts10 = [p for p in gl_pts if p[1][-1] == "1"]
-    # print(len(gl_pts))
-    getAllTimeseries(pts10[:len(pts10) // 2],
-        times[7126:], "FirstHalf", "GreatLakes", prt=True, wait=10)
-    getAllTimeseries(pts10[len(pts10) // 2:],
-        times[7126:], "SecondHalf", "GreatLakes", prt=True, wait=10)
-    pts5 = [p for p in gl_pts if p[1][-1] == "6"]
-    getAllTimeseries(pts5[:len(pts5) // 2],
-        times, "FirstHalf5", "GreatLakes", prt=True, wait=10)
-    getAllTimeseries(pts5[len(pts5) // 2:],
-        times, "SecondHalf5", "GreatLakes", prt=True, wait=10)
-
-# runEcoregions(datapts, "SeasonalityData", "ecoregions")
+    getAllTimeseries(datapts,
+        times, "AllData", "AFolder", prt=True, wait=10)
