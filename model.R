@@ -11,13 +11,6 @@ sigsmooth <- function(lst, k = 3/10) {
   len <- length(filt)
   # Pad with first value, then cut the padding off again
   stats::filter(c(rep(lstsig[1], len), lstsig), filt, sides=1)[(len+1):(len + length(lstsig))]
-  # lstsig +
-  #   lag(lstsig, 1) / 2 +
-  #   lag(lstsig, 2) / 4 +
-  #   lag(lstsig, 3) / 6 +
-  #   lag(lstsig, 4) / 8 +
-  #   lag(lstsig, 5) / 10 +
-  #   lag(lstsig, 6) / 12
 }
 
 humsmooth <- function(hum) {
@@ -118,11 +111,13 @@ krig.anom <- function(indat, rtn.model=FALSE) {
     }
   }
   
-  coef.lst <- fn(fitted$Coef.LSTSigmoid,
-                             aRange = 1.5e5, lambda = 205)
+  coef.lst <- fn(fitted$Coef.LSTSigmoid
+                             , aRange = 1.5e5, lambda = 205
+                 )
   
-  coef.humidity <- fn(fitted$Coef.Humidity,
-                                  aRange = 3.9e4, lambda = 116)
+  coef.humidity <- fn(fitted$Coef.Humidity
+                                  , aRange = 3.9e4, lambda = 116
+                      )
   if (rtn.model) {
     list(
       "LST" = coef.lst,
@@ -247,16 +242,21 @@ krig.ssn <- function(indat, rtn.model=FALSE, ...) {
     }
   }
   
-  kix <- fn(train$Intercept, zer.itx(train),
-            aRange = 5.7, lambda = 0.14)
-  amp <- fn(train$Amplitude, zer.amp(train),
-            aRange = 31, lambda = 0.6)
-  fw <- fn(train$FallWinter, zer.fw(train),
-           aRange = 25, lambda = 0.78)
-  ssu <- fn(train$SpringSummer, cbind(zer.ssu(train), train$FallWinter),
-            aRange = 15, lambda = 1.2)
-  wid <- fn(train$WinterDay, zer.wid(train),
-            aRange = 28, lambda = 2)
+  kix <- fn(train$Intercept, zer.itx(train)
+            ,aRange = 5.7, lambda = 0.14
+            )
+  amp <- fn(train$Amplitude, zer.amp(train)
+            ,aRange = 31, lambda = 0.6
+            )
+  fw <- fn(train$FallWinter, zer.fw(train)
+           ,aRange = 25, lambda = 0.78
+           )
+  ssu <- fn(train$SpringSummer, cbind(zer.ssu(train), train$FallWinter)
+            ,aRange = 15, lambda = 1.2
+            )
+  wid <- fn(train$WinterDay, zer.wid(train)
+            ,aRange = 28, lambda = 2
+            )
   
   if (rtn.model) {
     list(

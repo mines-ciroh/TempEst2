@@ -8,7 +8,7 @@ output: pdf_document
 This is a quick demo of how to use the TempEst 2 model code.  Dependencies are
 `tidyverse` and `fields`, both imported by `model.R`.
 
-```{r warning=FALSE, message=FALSE}
+```{r setup, warning=FALSE, message=FALSE}
 source("model.R")
 ```
 
@@ -256,6 +256,11 @@ Using `rtn.model=TRUE`, each entry in the list is a kriging model.  Some items
 of interest are shown below, followed by code to summarize model parameters.
 
 ```{r}
+load("krigs.rda")
+```
+
+
+```{r}
 model$Intercept$summary
 summary(model$Intercept)$fixedEffectsTable  # intercept, lon, lat, then fixed terms
 colnames(model$Intercept$Z)
@@ -284,4 +289,148 @@ write_csv(modcoefs, "FixedModel.csv")
 modcoefs
 ```
 
+#### Plot Spatial Signal
+
+`fields` includes functions to directly plot a grid of the spatial signal in
+a spatial-statistical model.  In effect, this displays spatial anomalies, where
+there is a spatial autocorrelation in the component of the model that is not
+explained by the fixed regression - in other words, where the sites in a region
+tend to behave weirdly (distinct from random noise at an individual site).
+This suggests where there may be non-modeled phenomena impacting stream temperature.
+
+The plots are a bit difficult to see embedded in the notebook, so to summarize:
+
+- Intercept (mean temperature) basically has a north-south gradient with scattered
+short-distance anomalies.
+- Amplitude (annual variation) increases generally to the northeast, but has
+several identifiable anomaly regions: northern Arkansas, northern Florida,
+northern Arizona, eastern California, and northwestern Oregon.  Several of these
+correspond to cross-validation error hot spots.
+- The autumn/winter coefficient weakly increases to the west, but the range is
+dominated by spatial signal.  There are several high points in the west and low
+points in the east.
+- The spring/summer coefficient generally increases to the northwest.  Anomalies
+are mostly short-ranged, but there is a bit of a general high point in the northern
+Rockies/Cascades region.
+- The peak winter date has very little discernible gradient; it is dominated by
+longer-ranged spatial anomalies.  These are notably present along the West Coast
+mountains (early) and near the Great Lakes area (late), along with many weaker
+anomalies.
+- LST sensitivity increases to the north and a little to the west.  There are
+no visible anomalies.
+- Humidity sensitivity increases to the west and a little to the north.  There
+are no visible anomalies.
+
+```{r}
+usa <- map_data("state")
+
+exmod <- model$Humidity
+
+# 25 to 50 N, 125 to 65 W
+gList <- list(
+  lon = (-125):(-65),
+  lat = 25:50
+)
+
+# drop.Z: ignore fixed-part covariates
+surf <- predictSurface(exmod, gridList = gList, drop.Z = TRUE)
+sg <- as_tibble(make.surface.grid(gList)) %>%
+  mutate(z = as.vector(surf$z))
+
+
+ggplot(sg, aes(x=lon, y=lat, fill=z)) +
+  geom_tile() +
+  geom_polygon(aes(long, lat, group=group, fill=NA), data=usa, color="black",
+               fill=NA) +
+  theme_bw()
+```
+
+Now map it over all of them.
+
+```{r}
+spatsig <- map_dfr(model,
+                   ~{
+                     as_tibble(make.surface.grid(gList)) %>%
+                       mutate(z = as.vector(predictSurface(.x,
+                                                           gridList = gList,
+                                                           drop.Z=TRUE
+                                                           )$z))
+                   }, .id = "Component")
+```
+
+```{r}
+spatsig %>%
+  drop_na() %>%
+  group_by(Component) %>%
+  mutate(z = (z - min(z, na.rm=T)) / (max(z, na.rm=T) - min(z, na.rm=T))) %>%
+  ggplot(aes(lon, lat, fill=z)) +
+  geom_tile() +
+  scale_fill_viridis_c() +
+  geom_polygon(aes(long, lat, group=group, fill=NA), data=usa, fill=NA, color="black") +
+  facet_wrap(~Component) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  labs(
+    x="Longitude",
+    y="Latitude",
+    fill="Normalized Spatial Component"
+  )
+
+ggsave("Figures/SpatialSignal.png", width=6.5, height=4, bg="white")
+```
+
+
+
+#### Plot Fixed Effects
+
+Fixed effect coefficients from before:
+
+```{r}
+modcoefs
+```
+
+Now extract variable ranges:
+
+```{r}
+mc.range <- modcoefs %>%
+  filter(Variable != "Intercept") %>%
+  rowwise() %>%
+  group_modify(~{
+    cmp <- first(.x$Component)
+    vr <- first(.x$Variable)
+    vals <- cbind(model[[cmp]]$Z, model[[cmp]]$x)[,vr]
+    y <- model[[cmp]]$y
+    mutate(.x,
+           YMin = min(y),
+           YMax = max(y),
+           Min = quantile(vals, 0.05),
+           Max = quantile(vals, 0.95))
+  }) %>%
+  ungroup() %>%
+  mutate(
+    Effect = estimate * (Max - Min) / (YMax - YMin),
+    LogEffect = sign(Effect) * log(abs(Effect) + 1)
+  )
+```
+
+```{r}
+ggplot(mc.range, aes(Variable, Component, fill=Effect)) +
+  geom_tile() +
+  scale_fill_viridis_c(limits=c(-5, 5), oob=scales::squish) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5)) +
+  labs(
+    x = "Feature",
+    y = "Output",
+    fill = "Normalized\nEffect"
+  )
+ggsave("Figures/LinearEffects.png", width=5, height=3, bg="white")
+```
+
+It is important to note that this is *not* showing standalone variable importance,
+and key variables may act in combination.  Anywhere that effects are larger than 1,
+meaning the effect of the range of the variable exceeds the actual range of the
+prediction value, another variable must be counterbalancing it in practice.  For
+example, large impacts across humidities suggest that what is happening is probably
+a difference between humidities.
 

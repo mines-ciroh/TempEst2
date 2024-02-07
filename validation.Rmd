@@ -181,17 +181,20 @@ kfold <- function(data, k=5,
     mutate(cv = sample(1:k, 1)) %>%
     ungroup()
   map_dfr(1:k,
-          function(cvi) {
+          ~safely(function(cvi) {
             train <- filter(data, cv != cvi)
             test <- filter(data, cv == cvi)
             proc(
               fn(train)(test)
             )
-          })
+          }, otherwise=tibble())(.)$result
+  )
 }
 
-kfold.stream <- function(data, procfn, progf, k=5) {
-  file.remove(progf)
+kfold.stream <- function(data, procfn, progf, k=5, remove=TRUE) {
+  if (remove) {
+    file.remove(progf)
+  }
   kfold(data, k,
         proc = \(x) {
           write_csv(procfn(x), progf, append=file.exists(progf))
@@ -434,6 +437,38 @@ print(plt)
 ggsave("Figures/ErrorCDF.png", plt, width=6.5, height=3, units="in", bg="white")
 ```
 
+## Box Plots
+
+Requires an `Ecoregions.csv` file mapping gages to ecoregions.
+
+```{r}
+global.cvp %>%
+  left_join(read_csv("Ecoregions.csv"), by="id") %>%
+  filter(!is.na(ecoregion)) %>%
+  group_by(ecoregion) %>%
+  mutate(Count = n()) %>%
+  ungroup() %>%
+  mutate(
+    `RMSE (C)` = scales::squish(`RMSE (C)`, c(0, 10)),
+    `Percent Bias` = scales::squish(`Percent Bias`, c(-100, 100))
+  ) %>%
+  pivot_longer(c(`RMSE (C)`, `Percent Bias`)) %>%
+  ggplot(aes(str_wrap(str_to_title(paste0(ecoregion, " (", Count, ")")), 15), value)) +
+  geom_boxplot() +
+  facet_wrap(~name, strip.position = "left", ncol = 1, scales = "free_y",
+             labeller = as_labeller(c(
+               "RMSE (C)" = "Gage\nValidation\nRMSE (C)",
+               "Percent Bias" = "Gage\nValidation\nPercent Bias"
+             ))) +
+  theme_bw() +
+  theme(strip.placement = "outside", strip.background = element_blank(),
+        axis.text.x = element_text(angle=60, vjust = 0.5)) +
+  labs(x="EPA Level I Ecoregion (gage count)",
+       y=NULL)
+
+ggsave("Figures/PerformanceBoxes_wBias.png", width=6.5, height=3, bg="white")
+```
+
 # Coverage Range
 
 Here, I simply plot the range of some key variables covered by the dataset.  One
@@ -491,6 +526,65 @@ data %>%
     y="Frequency (log scale)"
   )
 ```
+
+
+# Comparison to Ecoregion Models
+
+Many models perform better when they are tailored to smaller regions.  With
+statistical models, this is a tradeoff against having more data to fit relationships.
+In this case, performance is slightly worse when grouped by ecoregion.
+
+This test can be run to fit covariance parameters per model, by commenting out
+those lines in the source code which set parameters.  However, covariance
+optimization often crashes for a substantial number of runs, since a small number
+of points are more likely to run into issues.  Thus, far more data are available
+if the covariance parameters are left pre-fitted.  This does not impact overall
+performance.
+
+```{r eval=FALSE, message=FALSE}
+ecoxv <- data %>%
+  left_join(select(read_csv("Ecoregions.csv"), id, ecoregion), by="id") %>%
+  filter(!is.na(ecoregion)) %>%
+  group_by(ecoregion) %>%
+  filter(length(unique(id)) >= 20) %>%
+  group_trim() %>%
+  group_modify(~kfold(.x, k=10))
+write_csv(ecoxv, "Data/EcoregionXV.csv")
+```
+```{r}
+ecoxv <- read_csv("Data/EcoregionXV.csv")
+```
+```{r}
+summary(select(ecoxv, -id))
+```
+
+
+```{r}
+ecoxv %>%
+  group_by(ecoregion) %>%
+  mutate(Count = n()) %>%
+  ungroup() %>%
+  mutate(
+    `RMSE (C)` = scales::squish(`RMSE (C)`, c(0, 10)),
+    `Percent Bias` = scales::squish(`Percent Bias`, c(-100, 100))
+  ) %>%
+  pivot_longer(c(`RMSE (C)`, `Percent Bias`)) %>%
+  ggplot(aes(str_wrap(str_to_title(paste0(ecoregion, " (", Count, ")")), 15), value)) +
+  geom_boxplot() +
+  facet_wrap(~name, strip.position = "left", ncol = 1, scales = "free_y",
+             labeller = as_labeller(c(
+               "RMSE (C)" = "Gage\nValidation\nRMSE (C)",
+               "Percent Bias" = "Gage\nValidation\nPercent Bias"
+             ))) +
+  theme_bw() +
+  theme(strip.placement = "outside", strip.background = element_blank(),
+        axis.text.x = element_text(angle=60, vjust = 0.5)) +
+  labs(x="EPA Level I Ecoregion (gage count)",
+       y=NULL)
+
+ggsave("Figures/PerformanceBoxes_EcoWise.png", width=6.5, height=3, bg="white")
+```
+
 
 
 # Arid Southwest Performance

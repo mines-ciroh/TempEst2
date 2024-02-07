@@ -238,5 +238,6 @@ times = [(str(x), str(y+1),
 # 20 seconds works for 1300 points.  Scale accordingly.  The goal of the wait
 # is to avoid exceeding 3000 jobs.
 if __name__ == "__main__":
-    getAllTimeseries(datapts,
-        times, "AllData", "AFolder", prt=True, wait=10)
+    # getAllTimeseries(datapts,
+    #     times, "AllData", "AFolder", prt=True, wait=10)
+    runEcoregions(datapts, "", "Ecoregions")
