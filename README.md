@@ -1,7 +1,7 @@
 # TempEst2
 TempEst 2/SCHEMA is "TEMPerature ESTimation, version 2, using Seasonal Conditions Historical Estimation with Modeled daily Anomaly". It estimates stream water temperature at a point, for streams of any size, using a data-driven model based on satellite remote sensing data.
 
-This repository contains the model source code (`model.R`), Google Earth Engine data retrieval script (`eeretrieval.py`) and example data collection points (`datapts.py`), and R Notebooks demonstrating model usage (`demo.Rmd`) and a large set of model performance tests (`validation.Rmd`), used to make the performance claims reproducible.  In addition, the Releases include knitted output of both Notebooks (`demo.pdf`, `validation.pdf`) and the full training/testing dataset (`AllData.csv`).
+This repository contains the model source code (`model.R`), Google Earth Engine data retrieval script (`eeretrieval.py`) and example data collection points (`datapts.py`), and R Notebooks demonstrating model usage (`demo.Rmd`) and a large set of model performance tests (`validation.Rmd`), used to make the performance claims reproducible.  In addition, the Releases include knitted output of both Notebooks (`demo.pdf`, `validation.pdf`) and the full training/testing dataset (`AllData.csv`, `ExtData.csv` including maximum temperatures).
 
 ## Quick Guide
 
@@ -21,15 +21,17 @@ A pre-trained model is available in Releases as `model.rda`.  `load("model.rda")
 * lst (land surface temperature, daily daytime mean in a 500-m radius about point of interest; Celsius)
 * humidity (specific humidity, daily mean in a 500-m radius about point of interest; unitless, kg/kg)
 
-Using this data frame as the argument to `model`, the function will return the same data frame with three new columns:
+Using this data frame as the argument to `model`, the function will return the same data frame with three or five new columns:
 
 * temp.mod (modeled daily mean temperature; Celsius)
 * temp.doy (modeled day-of-year mean temperature; Celsius)
 * temp.anom (modeled temperature anomaly relative to day-of-year mean; Celsius)
+* temp.plus (modeled maximum temperature relative to day-of-year mean; Celsius)
+* temp.max (modeled maximum daily temperature; Celsius)
 
 `temp.mod` = `temp.doy` + `temp.anom`.
 
-These three columns are the final output, and can be used to assess actual estimated temperature (`temp.mod`); typical seasonal conditions (`temp.doy`), such as to assess general long-term behavior; and departure from typical seasonal conditions (`temp.anom`), such as to assess heat waves or other extremes.
+These three (five) columns are the final output, and can be used to assess actual estimated temperature (`temp.mod`); typical seasonal conditions (`temp.doy`), such as to assess general long-term behavior; and departure from typical seasonal conditions (`temp.anom`), such as to assess heat waves or other extremes.
 
 ### Retrieving Prediction Data
 
@@ -44,6 +46,8 @@ Using all default options, `full.schema()` returns a function for training a mod
 First, by default the model is trained with the two kriging models included, but the `full.schema` function itself is a generic framework for linking a seasonality (`sche`) and anomaly (`ma`) component, and these can be specified separately, e.g. to test a different approach without changing any of the infrastructure.
 
 The third argument to `full.schema` is `rtn.model`, which is `FALSE` by default.  If it is set to `TRUE`, then, instead of returning a prediction function, `full.schema(rtn.model=TRUE)(training data)` will return a list of model components.  This is useful to examine model behaviors directly, such as extracting coefficients from the kriging models.
+
+If the fourth argument to `full.schema`, `use.max`, is `TRUE` (default `FALSE`), then the model will be trained to predict both mean and maximum temperature, requiring a `temperature.max` column in the training data.
 
 ## Citation and More Information
 

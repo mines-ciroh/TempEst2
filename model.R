@@ -44,7 +44,14 @@ physfit.vec <- function(lst, hum, temp) {
          Coef.Humidity = hum)
 }
 
-full.schema <- function(sche=krig.ssn, ma=krig.anom, rtn.model=FALSE) {
+physfit.vecplus <- function(lst, hum, temp) {
+  rename(physfit(tibble(lst=lst, humidity=hum, temperature=temp)),
+         Coef.LSTSigmoidP = lst,
+         Coef.HumidityP = hum)
+}
+
+full.schema <- function(sche=krig.ssn, ma=krig.anom, rtn.model=FALSE,
+                        use.max=FALSE) {
   function(indat) {
     # Returns a function that takes data --> prediction
     # Required columns in indat and data:
@@ -60,7 +67,8 @@ full.schema <- function(sche=krig.ssn, ma=krig.anom, rtn.model=FALSE) {
     # if rtn.model, return the model components instead of a predictor function
 
     ssn <- sche(indat, rtn.model=rtn.model)  # ssn(data) -> tibble(id, day, temp.doy)
-    anom <- ma(indat, rtn.model=rtn.model)  # anom(data) -> tibble(id, date, temp.anom)
+    anom <- ma(indat, rtn.model=rtn.model,
+               use.max=use.max)  # anom(data) -> tibble(id, date, temp.anom)
     
     if (rtn.model) {
       c(ssn, anom)
@@ -71,17 +79,30 @@ full.schema <- function(sche=krig.ssn, ma=krig.anom, rtn.model=FALSE) {
         
         left_join(prdat, anpr, by=c("id", "date")) %>%
           left_join(doypr, by=c("id", "day")) %>%
-          mutate(temp.mod = temp.doy + temp.anom)
+          (\(x) {if (use.max) {
+            mutate(x, temp.mod = temp.doy + temp.anom,
+                 temp.max = temp.doy + temp.plus)
+          } else {
+            mutate(x, temp.mod = temp.doy + temp.anom)
+          }})
       }
     }
   }
 }
 
-krig.anom <- function(indat, rtn.model=FALSE) {
+krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
   # Returns function: data --> predictions
   smoother <- \(x) x %>%
     drop_na() %>%
     group_by(id, day) %>%
+    (
+      \(y) {
+        if ("temperature.max" %in% names(y) & "temperature" %in% names(y)) {
+          mutate(y, temperature.plus = temperature.max - mean(temperature,
+                                                              na.rm=T))
+        } else y
+      }
+    ) %>%
     mutate(across(c(any_of("temperature"), lst, humidity),
                   ~(.x - mean(.x, na.rm=T)))) %>%
     group_by(id) %>%
@@ -94,6 +115,7 @@ krig.anom <- function(indat, rtn.model=FALSE) {
     group_by(id) %>%
     summarize(
       physfit.vec(lst, humidity, temperature),
+      if(use.max) physfit.vecplus(lst, humidity, temperature.plus),
       across(c(lon, lat, water, elevation), mean),
       humidity_sd = sd(humidity)
     ) %>%
@@ -114,15 +136,31 @@ krig.anom <- function(indat, rtn.model=FALSE) {
   coef.lst <- fn(fitted$Coef.LSTSigmoid
                              , aRange = 1.5e5, lambda = 205
                  )
+  coef.lstp <- if (use.max) fn(fitted$Coef.LSTSigmoidP
+                  , aRange = 1.5e5, lambda = 205
+  ) else NULL
   
   coef.humidity <- fn(fitted$Coef.Humidity
                                   , aRange = 3.9e4, lambda = 116
                       )
+  coef.humidityp <- if (use.max) fn(fitted$Coef.HumidityP
+                      , aRange = 3.9e4, lambda = 116
+  ) else NULL
+  
   if (rtn.model) {
-    list(
-      "LST" = coef.lst,
-      "Humidity" = coef.humidity
-    )
+    if (use.max) {
+      list(
+        "LST" = coef.lst,
+        "Humidity" = coef.humidity,
+        "LSTMax" = coef.lstp,
+        "HumidityMax" = coef.humidityp
+      )
+    } else {
+      list(
+        "LST" = coef.lst,
+        "Humidity" = coef.humidity
+      )
+    }
   } else {
     function(prdat) {
       smdat <- prdat %>%
@@ -139,13 +177,22 @@ krig.anom <- function(indat, rtn.model=FALSE) {
       
       codat$lstco <- predict(coef.lst, xer(codat), Z=zer(codat))[,1]
       codat$humco <- predict(coef.humidity, xer(codat), Z=zer(codat))[,1]
+      codat$lstpco <- if (use.max) predict(coef.lstp, xer(codat), Z=zer(codat))[,1] else NULL
+      codat$humpco <- if (use.max) predict(coef.humidityp, xer(codat), Z=zer(codat))[,1] else NULL
       
       smdat <- left_join(smdat, codat, by="id") %>%
-        mutate(
-          temp.anom = lst * lstco + humidity * humco
-        )
+        (\(y) { if (use.max) {
+          mutate(y,
+          temp.anom = lst * lstco + humidity * humco,
+          temp.plus = lst * lstpco + humidity * humpco
+          )
+        } else {
+          mutate(y,
+                 temp.anom = lst * lstco + humidity * humco)
+        }
+        })
       
-      select(smdat, id, date, temp.anom)
+      select(smdat, id, date, temp.anom, any_of("temp.plus"))
     }
   }
 }

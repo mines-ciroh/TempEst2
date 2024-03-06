@@ -158,7 +158,7 @@ library(tidyverse)
 library(hydroGOF)
 source("model.R")
 source("valfn.R")
-fn <- full.schema()
+fn <- full.schema(use.max=FALSE)
 
 performance <- function(pred) pred %>%
   drop_na() %>%
