@@ -45,9 +45,10 @@ physfit.vec <- function(lst, hum, temp) {
 }
 
 physfit.vecplus <- function(lst, hum, temp) {
-  rename(physfit(tibble(lst=lst, humidity=hum, temperature=temp)),
-         Coef.LSTSigmoidP = lst,
-         Coef.HumidityP = hum)
+  as_tibble_row(lm(temp ~ lst + hum)$coefficients) %>%
+    rename(InterceptP = `(Intercept)`,
+           Coef.LSTSigmoidP = lst,
+           Coef.HumidityP = hum)
 }
 
 full.schema <- function(sche=krig.ssn, ma=krig.anom, rtn.model=FALSE,
@@ -134,17 +135,21 @@ krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
   }
   
   coef.lst <- fn(fitted$Coef.LSTSigmoid
-                             , aRange = 1.5e5, lambda = 205
+                             , aRange = 23, lambda = 1.1
                  )
   coef.lstp <- if (use.max) fn(fitted$Coef.LSTSigmoidP
-                  , aRange = 1.5e5, lambda = 205
+                  , aRange = 28, lambda = 1.1
   ) else NULL
   
   coef.humidity <- fn(fitted$Coef.Humidity
-                                  , aRange = 3.9e4, lambda = 116
+                                  , aRange = 23, lambda = 1.4
                       )
   coef.humidityp <- if (use.max) fn(fitted$Coef.HumidityP
-                      , aRange = 3.9e4, lambda = 116
+                      , aRange = 34, lambda = 1.6
+  ) else NULL
+  
+  coef.intp <- if (use.max) fn(fitted$InterceptP
+                                    , aRange = 32, lambda = 0.9
   ) else NULL
   
   if (rtn.model) {
@@ -153,7 +158,8 @@ krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
         "LST" = coef.lst,
         "Humidity" = coef.humidity,
         "LSTMax" = coef.lstp,
-        "HumidityMax" = coef.humidityp
+        "HumidityMax" = coef.humidityp,
+        "InterceptMax" = coef.intp
       )
     } else {
       list(
@@ -179,12 +185,13 @@ krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
       codat$humco <- predict(coef.humidity, xer(codat), Z=zer(codat))[,1]
       codat$lstpco <- if (use.max) predict(coef.lstp, xer(codat), Z=zer(codat))[,1] else NULL
       codat$humpco <- if (use.max) predict(coef.humidityp, xer(codat), Z=zer(codat))[,1] else NULL
+      codat$intpco <- if (use.max) predict(coef.intp, xer(codat), Z=zer(codat))[,1] else NULL
       
       smdat <- left_join(smdat, codat, by="id") %>%
         (\(y) { if (use.max) {
           mutate(y,
           temp.anom = lst * lstco + humidity * humco,
-          temp.plus = lst * lstpco + humidity * humpco
+          temp.plus = intpco + lst * lstpco + humidity * humpco
           )
         } else {
           mutate(y,
