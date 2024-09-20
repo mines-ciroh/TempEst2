@@ -51,6 +51,6 @@ If the fourth argument to `full.schema`, `use.max`, is `TRUE` (default `FALSE`),
 
 ## Citation and More Information
 
-If you use this model in your research, please cite [citation here... also BibTeX].  This paper also contains a detailed description of model design and performance characteristics.
+If you use this model in your research, please cite Philippus, Corona, Schneider, Rust, and Hogue, "Satellite-Based Spatial-Statistical Modeling of Daily Stream Water Temperatures at the CONUS Scale" (in review).  This paper also contains a detailed description of model design and performance characteristics.
 
-The seasonality component is based on the "three-sine" stream annual temperature cycle function described in [citation here].
+The seasonality component is based on the "three-sine" stream annual temperature cycle function described in: Philippus, Corona, and Hogue, (2024), "Improved annual temperature cycle function for stream seasonal thermal regimes", JAWRA, https://doi.org/10.1111/1752-1688.13228.
