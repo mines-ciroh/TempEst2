@@ -1,7 +1,7 @@
 # TempEst2
 TempEst 2/SCHEMA is "TEMPerature ESTimation, version 2, using Seasonal Conditions Historical Estimation with Modeled daily Anomaly". It estimates stream water temperature at a point, for streams of any size, using a data-driven model based on satellite remote sensing data.
 
-This repository contains the model source code (`model.R`), Google Earth Engine data retrieval script (`eeretrieval.py`) and example data collection points (`datapts.py`), and R Notebooks demonstrating model usage (`demo.Rmd`) and a large set of model performance tests (`validation.Rmd`), used to make the performance claims reproducible.  In addition, the Releases include knitted output of both Notebooks (`demo.pdf`, `validation.pdf`) and the full training/testing dataset (`AllData.csv`, `ExtData.csv` including maximum temperatures).
+This repository contains the model source code (`model.R`), Google Earth Engine data retrieval script (`eeretrieval.py`) and example data collection points (`datapts.py`), and R Notebooks demonstrating model usage (`demo.Rmd`) and a large set of model performance tests (`validation.Rmd`), used to make the performance claims reproducible.  In addition, the HydroShare data (see below) includes knitted output of both Notebooks (`demo.pdf`, `validation.pdf`) and the full training/testing dataset (`AllData.csv`, `ExtData.csv` including maximum temperatures).
 
 ## Quick Guide
 
@@ -55,4 +55,4 @@ If you use this model in your research, please cite Philippus, Corona, Schneider
 
 The seasonality component is based on the "three-sine" stream annual temperature cycle function described in: Philippus, Corona, and Hogue, (2024), "Improved annual temperature cycle function for stream seasonal thermal regimes", JAWRA, https://doi.org/10.1111/1752-1688.13228.
 
-Full training datasets and a knitted model validation notebook are available in CUAHSI HydroShare: https://www.hydroshare.org/resource/a8b243957f7946e388d10ab206990675/
+Full training datasets, pre-trained models, and a knitted model validation notebook are available in CUAHSI HydroShare: https://www.hydroshare.org/resource/a8b243957f7946e388d10ab206990675/
