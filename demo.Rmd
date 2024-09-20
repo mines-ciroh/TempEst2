@@ -359,15 +359,31 @@ spatsig <- map_dfr(model,
 ```
 
 ```{r}
+namer <- c(
+  "Amplitude" = "(B) Annual Amplitude",
+  "AutumnWinter" = "(C) Autumn/Winter Coefficient",
+  "Humidity" = "Daily Mean Humidity Coefficient",
+  "HumidityMax" = "Daily Max. Humidity Coefficient",
+  "Intercept" = "(A) Mean Temperature",
+  "InterceptMax" = "Daily Max. Intercept",
+  "LST" = "Daily Mean LST Coefficient",
+  "LSTMax" = "Daily Max. LST Coefficient",
+  "SpringSummer" = "Spring/Summer Coefficient",
+  "WinterDay" = "(D) Winter Anomaly Peak Date"
+)
 spatsig %>%
   drop_na() %>%
+  filter(Component %in% c(
+    "WinterDay", "Amplitude", "Intercept", "AutumnWinter"
+  )) %>%
+  mutate(Component = namer[Component]) %>%
   group_by(Component) %>%
   mutate(z = (z - min(z, na.rm=T)) / (max(z, na.rm=T) - min(z, na.rm=T))) %>%
   ggplot(aes(lon, lat, fill=z)) +
   geom_tile() +
   scale_fill_viridis_c() +
   geom_polygon(aes(long, lat, group=group, fill=NA), data=usa, fill=NA, color="black") +
-  facet_wrap(~Component) +
+  facet_wrap(~Component, ncol=2) +
   theme_bw() +
   theme(legend.position = "bottom") +
   labs(
@@ -376,7 +392,7 @@ spatsig %>%
     fill="Normalized Spatial Component"
   )
 
-ggsave("Figures/SpatialSignal.png", width=6.5, height=4, bg="white")
+ggsave("Figures/SpatialSignal.png", width=6.5, height=5, bg="white")
 ```
 
 

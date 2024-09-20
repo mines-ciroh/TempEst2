@@ -101,9 +101,14 @@ subset of the training data which may better match seasonal characteristics?
 
 ## Gagewise Cross-Validation
 
+These are reported using `AllData.csv` for mean temperature, while the knitted version used `ExtData.csv`
+to include *maximum* stream temperature predictions.  The latter has somewhat fewer observations,
+so the numbers below will have minor differences.  Run the Notebook using `AllData.csv`
+to reproduce stated/manuscript results.
+
 1. Overall median: RMSE 2.0 C, bias 0.1%, NSE 0.91 (median of 1404 observations). Global: RMSE 2.9 C, bias -0.3%, NSE 0.86 (2.2M observations).
 2. Daily anomaly (modeled temperature - mean modeled temperature for day-of-year): median NSE 0.45, compared to 0.24 for stationarity (anomaly = yesterday's anomaly) and 0.00 for climatology (anomaly = 0).
-3. Monthly mean: median RMSE 1.6 C, bias 0.1%, NSE 0.94 (median of 130 observations).  Compare TempEst 1 (monthly) at 1.7 C median RMSE.
+3. Monthly mean: median RMSE 1.6 C, bias 0.1%, NSE 0.94 (median of 130 observations).  Compare TempEst 1 (monthly) at 1.5 C median RMSE.
 4. Error has a modest correlation with elevation, but remains reasonable at high elevation.  Error does not meaningfully correlate with water abundance, so performance is good for small rivers.
 5. In a map of gage performance, there are a few small high-error (RMSE > 5 C) clusters (a handful of gages) but no large poorly-performing regions, which is not to say there are no regional trends at all (e.g., most gages in the northern Basin and Range perform somewhat poorly, but not awfully).  Notably, reasonable performance is maintained throughout the Northwestern Forested Mountains, Mediterranean California, and the North American Deserts - though the latter has noticeably poorer overall performance and all three host poor-performing (RMSE > 5 C) hot spots.
 6. In most regions, the large majority of individual errors are <5 C and almost all < 10 C. North American Deserts have ~2% of errors <-10 C, likely corresponding to the cluster of poor-performing gages on the Colorado River.
@@ -158,7 +163,7 @@ library(tidyverse)
 library(hydroGOF)
 source("model.R")
 source("valfn.R")
-fn <- full.schema(use.max=FALSE)
+fn <- full.schema(use.max=TRUE)
 
 performance <- function(pred) pred %>%
   drop_na() %>%
@@ -167,10 +172,20 @@ performance <- function(pred) pred %>%
       `Percent Bias` = pbias(temp.mod, temperature),
       R2 = cor(temp.mod, temperature)^2,
       NSE = NSE(temp.mod, temperature),
-      N = n()
+      `Absolute Bias` = mean(temp.mod - temperature)
   )
 
-progf <- "Data/FullCrossValidation_DropNA.csv"
+performance.max <- function(pred) pred %>%
+  drop_na() %>%
+  summarize(
+      `RMSE (C)` = rmse(temp.max, temperature.max),
+      `Percent Bias` = pbias(temp.max, temperature.max),
+      R2 = cor(temp.max, temperature.max)^2,
+      NSE = NSE(temp.max, temperature.max),
+      `Absolute Bias` = mean(temp.max - temperature.max)
+  )
+
+progf <- "FullCrossValidation.csv"
 
 # Utility code: cross-validation by gage ID
 kfold <- function(data, k=5,
@@ -201,13 +216,30 @@ kfold.stream <- function(data, procfn, progf, k=5, remove=TRUE) {
           tibble()
         })
 }
+
+table.printer <- function(perf, output) {
+  # Generate performance data table.  Data should have the columns generated
+  # by performance/performance.max, and id.  Adds ecoregion.
+  ecos <- read_csv("Ecoregions.csv", show_col_types = F) %>%
+    mutate(ecoregion = str_to_title(ecoregion))
+  comb <- left_join(perf, select(ecos, id, ecoregion))
+  paster <- \(x) paste(
+    quantile(x, c(0.05, 0.5, 0.95)) %>% signif(2),
+    collapse = ", "
+  )
+  items <- comb %>%
+    select(ecoregion, `RMSE (C)`, NSE, R2, `Percent Bias`, `Absolute Bias`) %>%
+    group_by(ecoregion) %>%
+    summarize(across(everything(), paster))
+  write_delim(items, output, delim = "&", eol="\\\\\n")
+}
 ```
 
 
 # Load Data
 
 ```{r loaddata}
-data <- read_csv("AllData.csv", show_col_types = F) %>% drop_na
+data <- read_csv("ExtData.csv", show_col_types = F) %>% drop_na
 ```
 
 
@@ -255,12 +287,22 @@ is about 8 GB.
 Without NAs, there are 2.2M observations for 1388 points and running it took about
 25 minutes (2.5 minutes each).  Memory usage hit 6.5 GB.
 
-```{r perfdata, eval=FALSE, warning=FALSE}
-tictoc::tic()
-kfold.stream(
-  data, drop_na, progf, k=10
-)
-tictoc::toc()
+In the max-using data, there are 1.7M observations for 1209 points and running
+it took about 20 minutes.  Memory usage hit ~3 GB.
+
+Note that main performance results in the manuscript are for the larger dataset
+that did not include maximum temperature, so the results here may differ slightly.
+To reproduce results in the paper, set `use.max=FALSE` above and load data
+from `AllData.csv`.
+
+```{r perfdata, warning=FALSE}
+if (!file.exists(progf)) {
+  tictoc::tic()
+  kfold.stream(
+    data, drop_na, progf, k=10
+  )
+  tictoc::toc()
+}
 ```
 
 ## Performance Summary
@@ -282,6 +324,15 @@ summary(global.cvp)
 
 ```{r}
 performance(global.raw)
+```
+
+```{r}
+global.raw %>% group_by(id) %>% performance.max %>% summary
+```
+
+```{r}
+global.raw %>% group_by(id) %>% performance %>% table.printer("means.txt")
+global.raw %>% group_by(id) %>% performance.max %>% table.printer("max.txt")
 ```
 
 
@@ -405,7 +456,7 @@ plt <- plot.eco() +
        fill="Ecoregion")
 
 print(plt)
-ggsave("Figures/ErrMap.png", width=6.5, height=5, units="in", bg="white")
+ggsave("Figures/ErrMap.png", width=6.5, height=5, dpi=1200, units="in", bg="white")
 ```
 
 ## CDFs
@@ -434,7 +485,7 @@ plt <- global.alerr %>%
     y="Cumulative Probability"
   )
 print(plt)
-ggsave("Figures/ErrorCDF.png", plt, width=6.5, height=3, units="in", bg="white")
+ggsave("Figures/ErrorCDF.png", plt, width=6.5, height=3, dpi=1200, units="in", bg="white")
 ```
 
 ## Box Plots
@@ -466,7 +517,7 @@ global.cvp %>%
   labs(x="EPA Level I Ecoregion (gage count)",
        y=NULL)
 
-ggsave("Figures/PerformanceBoxes_wBias.png", width=6.5, height=3, bg="white")
+ggsave("Figures/PerformanceBoxes_wBias.png", width=6.5, height=3, dpi=1200, bg="white")
 ```
 
 # Coverage Range
@@ -541,15 +592,17 @@ of points are more likely to run into issues.  Thus, far more data are available
 if the covariance parameters are left pre-fitted.  This does not impact overall
 performance.
 
-```{r eval=FALSE, message=FALSE}
-ecoxv <- data %>%
-  left_join(select(read_csv("Ecoregions.csv"), id, ecoregion), by="id") %>%
-  filter(!is.na(ecoregion)) %>%
-  group_by(ecoregion) %>%
-  filter(length(unique(id)) >= 20) %>%
-  group_trim() %>%
-  group_modify(~kfold(.x, k=10))
-write_csv(ecoxv, "Data/EcoregionXV.csv")
+```{r message=FALSE}
+if (!file.exists("Data/EcoregionXV.csv")) {
+  ecoxv <- data %>%
+    left_join(select(read_csv("Ecoregions.csv"), id, ecoregion), by="id") %>%
+    filter(!is.na(ecoregion)) %>%
+    group_by(ecoregion) %>%
+    filter(length(unique(id)) >= 20) %>%
+    group_trim() %>%
+    group_modify(~kfold(.x, k=10))
+  write_csv(ecoxv, "Data/EcoregionXV.csv")
+}
 ```
 ```{r}
 ecoxv <- read_csv("Data/EcoregionXV.csv")
@@ -582,7 +635,7 @@ ecoxv %>%
   labs(x="EPA Level I Ecoregion (gage count)",
        y=NULL)
 
-ggsave("Figures/PerformanceBoxes_EcoWise.png", width=6.5, height=3, bg="white")
+ggsave("Figures/PerformanceBoxes_EcoWise.png", width=6.5, height=3, dpi=1200, bg="white")
 ```
 
 
@@ -606,15 +659,17 @@ Performance is moderately worse than average at a median RMSE of 2.3 C (over 39
 gages).  There is a slight tendency towards negative bias (median -4%).
 
 
-```{r southwest.mod, eval=FALSE}
-tictoc::tic()
-fn(filter(data,
-                  lat > 38 | lon < -115 | lon > -100))(filter(data,
-                                                              lat < 38,
-                                                              lon > -115,
-                                                              lon < -100)) %>%
-  write_csv("Data/Southwest.csv")
-tictoc::toc()
+```{r southwest.mod}
+if (!file.exists("Data/Southwest.csv")) {
+  tictoc::tic()
+  fn(filter(data,
+                    lat > 38 | lon < -115 | lon > -100))(filter(data,
+                                                                lat < 38,
+                                                                lon > -115,
+                                                                lon < -100)) %>%
+    write_csv("Data/Southwest.csv")
+  tictoc::toc()
+}
 ```
 
 ```{r southwest.perf}
@@ -623,7 +678,7 @@ perf <- performance(read_csv("Data/Southwest.csv", show_col_types = F) %>%
 summary(select(perf, -id))
 
 perf %>%
-  pivot_longer(-c(id, N), names_to="GOF", values_to="Value") %>%
+  pivot_longer(-id, names_to="GOF", values_to="Value") %>%
   ggplot() +
   aes(y=Value) +
   geom_boxplot() +
@@ -839,31 +894,29 @@ spdat %>%
   )
 ```
 
-```{r spat.cv, eval=FALSE, warning=FALSE}
-if (file.exists("Data/SpatialCV.csv"))
-  file.remove("Data/SpatialCV.csv")
-
-walk(
-  unique(spdat$Group),
-  function(grp) {
-    fn(filter(spdat, Group != grp))(filter(spdat, Group == grp)) %>%
-      group_by(Group, id) %>%
-      performance %>%
-      write_csv("Data/SpatialCV.csv",
-                append=file.exists("Data/SpatialCV.csv"))
-  }
-)
+```{r spat.cv, warning=FALSE}
+if (!file.exists("Data/SpatialCV.csv")) {
+  walk(
+    unique(spdat$Group),
+    function(grp) {
+      fn(filter(spdat, Group != grp))(filter(spdat, Group == grp)) %>%
+        group_by(Group, id) %>%
+        performance %>%
+        write_csv("Data/SpatialCV.csv",
+                  append=file.exists("Data/SpatialCV.csv"))
+    }
+  )
+}
 ```
 
 ```{r}
-cv.perf <- read_csv("Data/SpatialCV.csv", show_col_types = F) %>%
-  left_join(spgroups, by="id")
+cv.perf <- read_csv("Data/SpatialCV.csv", show_col_types = F)
 ```
 
 ```{r}
-summary(select(cv.perf, -id, -Group, -N))
+summary(select(cv.perf, -id, -Group))
 plt <- cv.perf %>%
-  pivot_longer(-c(id, Group, N),
+  pivot_longer(-c(id, Group),
                names_to="GOF",
                values_to="Value") %>%
   filter(
@@ -884,7 +937,7 @@ plt <- cv.perf %>%
     y=NULL
   )
 print(plt)
-ggsave("Figures/SpatialCV.png", plt, width=6.5, height=4, units="in", bg="white")
+ggsave("Figures/SpatialCV.png", plt, width=6.5, height=4, dpi=1200, units="in", bg="white")
 ```
 
 # Testing Gage Network Density
@@ -947,7 +1000,7 @@ plt <- ggplot(ddat) +
     y="Gage RMSE (C)"
   )
 print(plt)
-ggsave("Figures/Density.png", plt, width=6.5, height=3, units="in", bg="white")
+ggsave("Figures/Density.png", plt, width=6.5, height=3, dpi=1200, units="in", bg="white")
 ```
 
 # Walk-Forward Validation
@@ -958,22 +1011,26 @@ compensate.  It will also be important to check trends in performance over time.
 The first prediction year is 2003, rather than 2002 (beginning from 2001), to
 avoid issues with insufficient data coverage.
 
-```{r eval=FALSE, warning=FALSE}
-fn <- full.schema()
-df <- "Data/WalkForward_byYear.csv"
-file.remove(df)
-wfv <- walk(2003:2022,
+```{r warning=FALSE}
+if (!file.exists("Data/WalkForward_byYear.csv")) {
+  fn <- full.schema()
+  df <- "Data/WalkForward_byYear.csv"
+  file.remove(df)
+  walk(2003:2022,
         function(yr) {
           train <- filter(data, year < yr)
           test <- filter(data, year == yr)
-          write_csv(performance(
-            fn(train)(test) %>% group_by(id)
-          ) %>%
-            mutate(Year = yr),
-          df,
-          append = file.exists(df))
-          print(yr)
+          tryCatch({
+            write_csv(performance(
+              fn(train)(test) %>% group_by(id)
+            ) %>%
+              mutate(Year = yr),
+            df,
+            append = file.exists(df))
+            print(yr)
+          }, error=\(cond) { NULL })
         })
+}
 ```
 
 ```{r}
