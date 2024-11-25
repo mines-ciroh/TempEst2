@@ -22,8 +22,8 @@ from datapts import datapts
 # Trigger the authentication flow.
 # ee.Authenticate()
 
-# Initialize the library.
-ee.Initialize()
+# Initialize the library.  It is now necessary to specify a Google Cloud project (this is still free for academic use).
+ee.Initialize(project='YOUR_CLOUD_PROJECT_HERE')
 
 """# Temperature Retrieval Setup
 
