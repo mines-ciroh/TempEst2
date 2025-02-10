@@ -35,17 +35,17 @@ These three (five) columns are the final output, and can be used to assess actua
 
 ### Retrieving Prediction Data
 
-Suitable prediction data can be retrieved in any way, but a script for retrieving the data from Google Earth Engine is included.  In `eeretrieval.py`, the function `getAllTimeseries` will retrieve data for specified points and dates to Google Drive.  Points are specified according to the example format in `datapts.py`.
+Suitable prediction data can be retrieved in any way, but a script for retrieving the data from Google Earth Engine is included.  In `eeretrieval.py`, the function `getAllTimeseries` will retrieve data for specified points and dates to Google Drive.  Points are specified according to the example format in `datapts.py`: a list of `[[[longitude, latitude], "point id"], ...]`.
 
 ### Training a Model
 
-Using all default options, `full.schema()` returns a function for training a model.  This function's argument is a data frame similar to above, but with one additional column: `temperature`, the observed temperature (daily mean, Celsius) for training.  `full.schema()(training data)` then returns a function like `model` above.  A typical approach to model training is for `id` to be set to training ga(u)ge IDs, such as the USGS stream temperature gage network, so that spatial observations can readily be linked to observed temperatures.  Prediction data and observations are retrieved independently of the model observations, but an example for USGS gages is included in `demo.Rmd`.
+Using all default options, `full.schema()` returns a function for training a model.  This function's argument is a data frame similar to above, but with one additional column: `temperature`, the observed temperature (daily mean, Celsius) for training.  `full.schema()(training data)` then returns a function like `model` above.  A typical approach to model training is for `id` to be set to training ga(u)ge IDs, such as the USGS stream temperature gage network, so that spatial observations can readily be linked to observed temperatures.  Prediction data and observations are retrieved independently of the training observations, but an example for USGS gages is included in `demo.Rmd`.
 
 `full.schema` provides some additional options.
 
 First, by default the model is trained with the two kriging models included, but the `full.schema` function itself is a generic framework for linking a seasonality (`sche`) and anomaly (`ma`) component, and these can be specified separately, e.g. to test a different approach without changing any of the infrastructure.
 
-The third argument to `full.schema` is `rtn.model`, which is `FALSE` by default.  If it is set to `TRUE`, then, instead of returning a prediction function, `full.schema(rtn.model=TRUE)(training data)` will return a list of model components.  This is useful to examine model behaviors directly, such as extracting coefficients from the kriging models.
+The third argument to `full.schema` is `rtn.model`, which is `FALSE` by default.  If it is set to `TRUE`, then, instead of returning a prediction function, `full.schema(rtn.model=TRUE)(training data)` will return a list of model components.  This is useful to examine model behaviors directly, such as extracting coefficients from the kriging models.  This is shown in `demo.Rmd`.
 
 If the fourth argument to `full.schema`, `use.max`, is `TRUE` (default `FALSE`), then the model will be trained to predict both mean and maximum temperature, requiring a `temperature.max` column in the training data.
 
@@ -55,4 +55,4 @@ If you use this model in your research, please cite Philippus, Corona, Schneider
 
 The seasonality component is based on the "three-sine" stream annual temperature cycle function described in: Philippus, Corona, and Hogue, (2024), "Improved annual temperature cycle function for stream seasonal thermal regimes", JAWRA, https://doi.org/10.1111/1752-1688.13228.
 
-Full training datasets, pre-trained models, and a knitted model validation notebook are available in CUAHSI HydroShare: https://www.hydroshare.org/resource/a8b243957f7946e388d10ab206990675/
+Full training datasets, pre-trained models, and a knitted model validation notebook PDF are available in CUAHSI HydroShare: https://doi.org/10.4211/hs.a8b243957f7946e388d10ab206990675.
