@@ -163,7 +163,7 @@ library(tidyverse)
 library(hydroGOF)
 source("model.R")
 source("valfn.R")
-fn <- full.schema(use.max=TRUE)
+fn <- full.schema(use.max=FALSE)
 
 performance <- function(pred) pred %>%
   drop_na() %>%
@@ -239,7 +239,8 @@ table.printer <- function(perf, output) {
 # Load Data
 
 ```{r loaddata}
-data <- read_csv("ExtData.csv", show_col_types = F) %>% drop_na
+# data <- read_csv("ExtData.csv", show_col_types = F) %>% drop_na
+data <- read_csv("AllData.csv", show_col_types = F) %>% drop_na
 ```
 
 
@@ -357,8 +358,8 @@ global.raw %>%
 
 ## Monthly Performance
 
-Monthly performance approaches the NorWeST range, with a median RMSE of 1.6 C.
-The TempEst 1, monthly, model has a median RMSE of about 1.7 C, but it
+Monthly performance is similar to TempEst 1, with a median RMSE of 1.6 C.
+The TempEst 1, monthly, model has a median RMSE of about 1.5 C, but it
 is much faster since it computes months directly instead of retrieving single days
 (30x more data).
 
@@ -490,7 +491,16 @@ ggsave("Figures/ErrorCDF.png", plt, width=6.5, height=3, dpi=1200, units="in", b
 
 ## Box Plots
 
-Requires an `Ecoregions.csv` file mapping gages to ecoregions.
+Requires an `Ecoregions.csv` file mapping gages to ecoregions.  We'll also print
+out the outliers.
+
+```{r}
+global.cvp %>%
+  left_join(read_csv("Ecoregions.csv"), by="id") %>%
+  filter(!is.na(ecoregion)) %>%
+  filter(abs(`Percent Bias`) > 100 | `RMSE (C)` > 10)
+```
+
 
 ```{r}
 global.cvp %>%
@@ -517,7 +527,7 @@ global.cvp %>%
   labs(x="EPA Level I Ecoregion (gage count)",
        y=NULL)
 
-ggsave("Figures/PerformanceBoxes_wBias.png", width=6.5, height=3, dpi=1200, bg="white")
+ggsave("Figures/PerformanceBoxes_wBias.png", width=6.5, height=5, dpi=1200, bg="white")
 ```
 
 # Coverage Range

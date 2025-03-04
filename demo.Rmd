@@ -239,7 +239,7 @@ the trend in mean annual temperature with respect to river width (approximated b
 water abundance), all else being equal.
 
 ```{r warning=FALSE, message=FALSE}
-model <- full.schema(rtn.model=TRUE)(data)
+model <- full.schema(rtn.model=TRUE, use.max=TRUE)(data)
 save(model, file="krigs.rda")
 ```
 
@@ -329,11 +329,11 @@ exmod <- model$Humidity
 # 25 to 50 N, 125 to 65 W
 gList <- list(
   lon = (-125):(-65),
-  lat = 25:50
+  lat = 25:55
 )
 
 # drop.Z: ignore fixed-part covariates
-surf <- predictSurface(exmod, gridList = gList, drop.Z = TRUE)
+surf <- predictSurface(exmod, gridList = gList, drop.Z = TRUE, extrap = TRUE)
 sg <- as_tibble(make.surface.grid(gList)) %>%
   mutate(z = as.vector(surf$z))
 
@@ -393,6 +393,53 @@ spatsig %>%
   )
 
 ggsave("Figures/SpatialSignal.png", width=6.5, height=5, bg="white")
+```
+
+
+
+#### Export Spatial Signal
+
+We can export the spatial signals as a NetCDF for use in TempEst 2-FAST.  We
+extend it a few degrees up into Canada so it can be used for the Columbia and
+Great Lakes watersheds.
+
+```{r}
+library(terra)
+load("krigs.rda")
+projstr <- "+proj=longlat +datum=WGS84"
+```
+
+```{r}
+# 1 km resolution = approx. 1/100 degree
+# 6001 x 3001
+# For testing, we can use low resolution, because a higher-res run uses many
+# GB of RAM.
+min_lat <- 25
+max_lat <- 55
+min_lon <- -125
+max_lon <- -65
+scale <- 4
+gList <- list(
+  lon = (min_lon * scale):(max_lon * scale) / scale,
+  lat = (min_lat * scale):(max_lat * scale) / scale
+)
+nr <- length(gList$lat)
+spatraster <- rast(ncol = length(gList$lon),
+                   nrow = nr,
+                   xmin = min_lon,
+                   xmax = max_lon,
+                   ymin = min_lat,
+                   ymax = max_lat,
+                   nlyr = 10,
+                   names = names(model))
+
+# Fields counts from bottom to top, terra counts from top to bottom
+for (nm in names(model)) {
+  values(spatraster[[nm]]) <- t(predictSurface(model[[nm]], gridList = gList,
+                                         drop.Z = TRUE, extrap = TRUE)$z)[nr:1,]
+}
+plot(spatraster)
+writeCDF(spatraster, "SpatialModels.nc", overwrite = TRUE, split = TRUE)
 ```
 
 
