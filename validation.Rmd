@@ -161,6 +161,7 @@ knitr::opts_chunk$set(message=FALSE, warning=FALSE)
 
 library(tidyverse)
 library(hydroGOF)
+library(terra)  # special case for mapping use
 source("model.R")
 source("valfn.R")
 fn <- full.schema(use.max=FALSE)
@@ -414,6 +415,66 @@ global.raw %>%
 ```
 
 ## Map
+
+### Location Map
+
+```{r}
+pdat <- global.raw %>% group_by(id, lon, lat) %>% summarize(
+  elevation = first(elevation),
+  por = n()
+)
+```
+
+```{r}
+elev <- rast("conus_1km.nc") %>% aggregate(10)
+# Cell numbers are left->right then top->bottom
+usa_filt <- map_data("usa", region="main") %>%
+  select(long, lat) %>%
+  as.matrix %>%
+  vect(type="polygons")
+elev <- mask(elev, usa_filt)
+extent <- ext(elev)
+lats <- tibble(lat=extent[3] + (extent[4] - extent[3])*(1:nrow(elev))/nrow(elev))
+lons <- tibble(lon=extent[1] + (extent[2] - extent[1])*(1:ncol(elev))/ncol(elev))
+etab <- cross_join(lats, lons) %>%
+  arrange(-lat)
+etab$z <- values(elev)[,1]
+```
+
+
+```{r}
+plt <- ggplot(pdat) +
+  geom_raster(aes(lon, lat, fill=z), data=etab) +
+  geom_polygon(aes(long, lat, group=group), data=map_data("state"), fill=NA,
+                 color="black", size=0.6) +
+  geom_point(aes(lon, lat), size=1.5, shape=21, fill="#0000FF", color="lightgrey", stroke=0.2) +
+  scale_fill_gradient(low="#004400", high="white", na.value=NA,
+                      breaks = (0:8)*500,
+                      guide = guide_colorbar(barwidth=unit(300, "points"),
+                                             barheight=unit(10, "points"),
+                                             title.position = "top",
+                                             direction = "horizontal")) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.key.size = unit(4, "points"),
+    legend.text = element_text(size=8),
+    legend.box = "vertical",
+    legend.margin = margin(),
+    legend.box.margin = margin()
+  ) +
+  labs(x="Longitude",
+       y="Latitude",
+       # color="Gage Elevation (m)",
+       # size="Gage Period of Record (years)",
+       fill="Elevation (m)")
+
+print(plt)
+ggsave("Figures/SiteMap.png", width=6.5, height=4.3, dpi=1200, units="in", bg="white")
+```
+
+### Performance Map
 
 The key result from the map is that there are no large regional hot spots for
 poor performance, although there are a few visible clusters on the order of ~5
@@ -1104,4 +1165,109 @@ map_dfr(list.files("Data/TSLen", full.names=TRUE),
   summarize(across(-id, ~median(.x, na.rm=T)))
 ```
 
+# Extreme Conditions
 
+```{r}
+global.raw <- read_csv(progf, show_col_types=F)
+```
+
+Look for one-in-five-year flood/drought/heat/cold. 0.05 probability corresponds
+roughly to five-year recurrence.
+
+## LST Extrema
+
+```{r}
+global.raw %>%
+  group_by(id) %>%
+  filter(
+    lst > quantile(lst, 0.9995)
+  ) %>%
+  group_by(id) %>%
+  performance() %>%
+  summary()
+```
+
+```{r}
+global.raw %>%
+  group_by(id) %>%
+  filter(
+    lst < quantile(lst, 0.0005)
+  ) %>%
+  group_by(id) %>%
+  performance() %>%
+  summary()
+```
+
+## Discharge Extrema
+
+Here, we need to add discharge observations.
+
+```{r}
+qfile <- "Data/Q.csv"
+```
+
+### Download Obs
+
+```{r}
+qrun <- "Data/qrun.txt"
+haverun <- (
+  if (file.exists(qrun)) {
+    read_csv(qrun)$run
+  } else {
+    NULL
+  }
+)
+```
+
+```{r}
+for (id in unique(global.raw$id)) {
+  tryCatch(
+    dataRetrieval::readNWISdv(id, "00060", "2001-01-01", "2023-12-31") %>%
+      as_tibble %>%
+      select(id=site_no,
+             date=Date,
+             Q=X_00060_00003) %>%
+      write_csv(qfile, append=file.exists(qfile)),
+    error = \(e) {},
+    finally = {
+      write_csv(tibble(run=id), qrun, append=file.exists(qrun))
+    }
+  )
+}
+```
+
+### Analysis
+
+```{r}
+q <- read_csv(qfile)
+```
+
+```{r}
+global.raw <- left_join(global.raw,
+                        q,
+                        by=c("id", "date")) %>%
+  drop_na()
+```
+
+
+```{r}
+global.raw %>%
+  group_by(id) %>%
+  filter(
+    Q > quantile(Q, 0.9995)
+  ) %>%
+  group_by(id) %>%
+  performance() %>%
+  summary()
+```
+
+```{r}
+global.raw %>%
+  group_by(id) %>%
+  filter(
+    Q < quantile(Q, 0.0005)
+  ) %>%
+  group_by(id) %>%
+  performance() %>%
+  summary()
+```
