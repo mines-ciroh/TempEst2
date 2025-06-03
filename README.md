@@ -3,6 +3,8 @@ TempEst 2/SCHEMA is "TEMPerature ESTimation, version 2, using Seasonal Condition
 
 This repository contains the model source code (`model.R`), Google Earth Engine data retrieval script (`eeretrieval.py`) and example data collection points (`datapts.py`), and R Notebooks demonstrating model usage (`demo.Rmd`) and a large set of model performance tests (`validation.Rmd`), used to make the performance claims reproducible.  In addition, the HydroShare data (see below) includes knitted output of both Notebooks (`demo.pdf`, `validation.pdf`) and the full training/testing dataset (`AllData.csv`, `ExtData.csv` including maximum temperatures).
 
+In addition to the GEE data retrieval script, there is a utility script in Python, `points_above.py`, for generating lists of coordinates in the correct format, evenly-spaced above given target site(s) - this is useful for quickly generating study points over rivers of interest.
+
 ## Quick Guide
 
 Dependencies in R: `tidyverse`, `fields`. Additional dependencies for Google Earth Engine data retrieval: Python with the GEE API configured.
@@ -36,6 +38,23 @@ These three (five) columns are the final output, and can be used to assess actua
 ### Retrieving Prediction Data
 
 Suitable prediction data can be retrieved in any way, but a script for retrieving the data from Google Earth Engine is included.  In `eeretrieval.py`, the function `getAllTimeseries` will retrieve data for specified points and dates to Google Drive.  Points are specified according to the example format in `datapts.py`: a list of `[[[longitude, latitude], "point id"], ...]`.
+
+### Generating Evenly-Spaced Points
+
+You'll need a list of points of interest (USGS gage IDs, COMIDs, or coordinates - all in the same format), your desired maximum number of points per river, and a corresponding list of base IDs (and can optionally specify the resolution; the default is 1,000).
+
+ID format:
+
+- USGS gage: `"USGS-<ID>"` with `site_type="usgs"`
+- COMID: just the COMID string with `site_type="comid"`
+- Coordinates: (lon, lat) in decimal degrees with `site_type="coordinates"`
+
+Then, just run `points_above.points_above_all([<site ids>], <site type>, <max points per river>, <resolution>, [<base ids>])` to get a list in the suitable format.
+
+Example for Clear Creek and Sagehen Creek:
+
+`points_above_all(["USGS-10343500", "USGS-06719505"], "usgs", 50, 1000, ["Sagehen", "ClearCreek"])`
+
 
 ### Training a Model
 

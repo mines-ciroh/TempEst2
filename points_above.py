@@ -17,9 +17,11 @@ projstr = "+proj=lcc +lat_1=25 +lat_2=60 +lat_0=42.5 +lon_0=-100 +x_0=0 +y_0=0 +
 # Sagehen Cr.
 test_id = "USGS-10343500"
 test_co = (-120.2379547, 39.43154577)
+test_cc = "USGS-06719505"
 
 
-def points_above_site(site, site_type, id_base, N, resolution=1000):
+def points_above_site(site, site_type, id_base, N, resolution=1000,
+                      return_df=False):
     """
     Retrieve *approximately* evenly-spaced points upstream of the given site.
 
@@ -37,13 +39,16 @@ def points_above_site(site, site_type, id_base, N, resolution=1000):
         Resolution in meters. The default is 1000.
     id_base : str
         Base name for point IDs.
+    return_df : Bool, optional
+        Return the dataframe instead of TE2-style points. The default is False.
+        This is useful if you want to work with the results in Python.
 
     Returns
     -------
     list of [[longitude, latitude], point_id].
 
     """
-    dist = N * resolution  # convert to km
+    dist = N * resolution / 1000  # convert to km
     if site_type == "coordinates":
         nav = nldi.navigate_byloc(site, "upstreamMain", "flowlines", distance=dist)
     else:
@@ -58,6 +63,8 @@ def points_above_site(site, site_type, id_base, N, resolution=1000):
     nav = nav.to_crs(projstr)  # need to be in meters to be accurate
     lengths = nav.length.cumsum()  # cumulative lengths from the bottom
     steps = np.arange(0, sum(nav.length), resolution)
+    if len(steps) > N + 1:
+        steps = steps[:(N+1)]
     result = []
     for step in steps:
         len_row = lengths[lengths > step].head(1)
@@ -66,28 +73,24 @@ def points_above_site(site, site_type, id_base, N, resolution=1000):
         excess = row_max - step
         row_index = len_row.index
         geom = nav.loc[row_index].geometry.iloc[0]
-        if excess > resolution:
-            # Negative indices go from the end. Solves the direction problem.
-            increments = -np.arange(1, excess, resolution)
-            multi = True
-        else:
-            # Just go "the excess" in from the start (top)
-            increments = excess
-            multi = False
-        points = shp.line_interpolate_point(geom, increments)
-        if multi:
-            result += points
-        else:
-            result.append(points)
+        # Going the excess from the top addresses the backwards-direction
+        # problem.
+        point = shp.line_interpolate_point(geom, excess)
+        result.append(point)
     # Now we should have a list of points in order from bottom to top.
     res = gpd.GeoDataFrame({
         "site_id": [id_base + "_" + str(i) for i in range(len(result))]
         },
-        geometry=gpd.GeoSeries(result)).to_crs(4326) # return to degrees
-    return res
+        geometry=gpd.GeoSeries(result)).set_crs(projstr).to_crs(4326) # return to degrees
+    if return_df:
+        return res
+    return [
+        [list(x.geometry.coords[0]), x.site_id]
+        for x in res.itertuples()
+        ]
 
 
-def points_above_all(sites, site_type, N, resolution=0.01, id_bases=None):
+def points_above_all(sites, site_type, N, resolution=1000, id_bases=None):
     """
     Retrieve *approximately* evenly-spaced points upstream of the given sites.
 
