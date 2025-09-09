@@ -403,6 +403,9 @@ We can export the spatial signals as a NetCDF for use in TempEst 2-FAST.  We
 extend it a few degrees up into Canada so it can be used for the Columbia and
 Great Lakes watersheds.
 
+The exporting is broken into chunks because full-CONUS, high-resolution runs use
+enormous RAM.
+
 ```{r}
 library(terra)
 load("krigs.rda")
@@ -414,32 +417,56 @@ projstr <- "+proj=longlat +datum=WGS84"
 # 6001 x 3001
 # For testing, we can use low resolution, because a higher-res run uses many
 # GB of RAM.
-min_lat <- 25
-max_lat <- 55
-min_lon <- -125
-max_lon <- -65
-scale <- 4
-gList <- list(
-  lon = (min_lon * scale):(max_lon * scale) / scale,
-  lat = (min_lat * scale):(max_lat * scale) / scale
-)
-nr <- length(gList$lat)
-spatraster <- rast(ncol = length(gList$lon),
-                   nrow = nr,
-                   xmin = min_lon,
-                   xmax = max_lon,
-                   ymin = min_lat,
-                   ymax = max_lat,
-                   nlyr = 10,
-                   names = names(model))
+# Additionally, 1-km resolution takes excessive space, in general. Try 5-km, which should still have
+# little impact.
+abs_min_lat <- 25
+abs_max_lat <- 55
+abs_min_lon <- -125
+abs_max_lon <- -65
+lon_size <- abs_max_lon - abs_min_lon
+lat_size <- abs_max_lat - abs_min_lat
+scale <- 20
+chunks <- 100  # in each direction, so total chunks = N^2
+spr <- NULL
+tictoc::tic()
+for (xc in 1:chunks - 1) {
+  # Determine whether to exclude the rightmost column (avoid overlap).
+  min_lon = abs_min_lon + xc * lon_size / chunks
+  max_lon = abs_min_lon + (xc + 1) * lon_size / chunks - 1/scale  # exclude the right
+  for (yc in 1:chunks - 1) {
+    min_lat = abs_min_lat + yc * lat_size / chunks
+    max_lat = abs_min_lat + (yc + 1) * lat_size / chunks - 1/scale  # exclude the right
+    gList <- list(
+      lon = (min_lon * scale):(max_lon * scale) / scale,
+      lat = (min_lat * scale):(max_lat * scale) / scale
+    )
+    nr <- length(gList$lat)
+    spatraster <- rast(ncol = length(gList$lon),
+                      nrow = nr,
+                      xmin = min_lon,
+                      xmax = max_lon,
+                      ymin = min_lat,
+                      ymax = max_lat,
+                      nlyr = 10,
+                      names = names(model))
 
-# Fields counts from bottom to top, terra counts from top to bottom
-for (nm in names(model)) {
-  values(spatraster[[nm]]) <- t(predictSurface(model[[nm]], gridList = gList,
-                                         drop.Z = TRUE, extrap = TRUE)$z)[nr:1,]
+    # Fields counts from bottom to top, terra counts from top to bottom
+    for (nm in names(model)) {
+      values(spatraster[[nm]]) <- t(predictSurface(model[[nm]], gridList = gList,
+                                            drop.Z = TRUE, extrap = TRUE)$z)[nr:1,]
+    }
+    if (is.null(spr)) {
+      spr <- spatraster
+    } else {
+      # Build up incrementally
+      spr <- mosaic(spr, spatraster)
+    }
+  }
+  cat("|")
 }
-plot(spatraster)
-writeCDF(spatraster, "SpatialModels.nc", overwrite = TRUE, split = TRUE)
+tictoc::toc()
+writeCDF(spr, "SpatialModels.nc", overwrite = TRUE, split = TRUE)
+plot(spr)
 ```
 
 
