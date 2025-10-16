@@ -9,6 +9,8 @@ In addition to the GEE data retrieval script, there is a utility script in Pytho
 
 Dependencies in R: `tidyverse`, `fields`. Additional dependencies for Google Earth Engine data retrieval: Python with the GEE API configured.
 
+Note that it is advisable to run at least 5 years and preferably 10, even if you are interested in a shorter period, so that TempEst 2 has adequate data to characterize the point of interest (see period-of-record tests in the paper).
+
 ### Using a Trained Model
 
 A pre-trained model is available in Releases as `model.rda`.  `load("model.rda")` will load a function called `model`.  The argument to `model` is a data frame with columns:
