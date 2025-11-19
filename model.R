@@ -125,6 +125,7 @@ full.schema <- function(sche=krig.ssn, ma=krig.anom, rtn.model=FALSE,
     #
     # if rtn.model, return the model components instead of a predictor function
 
+    indat$day <- as.integer(format(indat$date, "%j"))
     ssn <- sche(indat, rtn.model=rtn.model)  # ssn(data) -> tibble(id, day, temp.doy)
     anom <- ma(indat, rtn.model=rtn.model,
                use.max=use.max)  # anom(data) -> tibble(id, date, temp.anom)
@@ -134,6 +135,7 @@ full.schema <- function(sche=krig.ssn, ma=krig.anom, rtn.model=FALSE,
       c(ssn, anom)
     } else {
       function(prdat) {
+        prdat$day <- as.integer(format(prdat$date, "%j"))
         # For prediction, the SCHEMA function just needs to join the component results
         # appropriately, then compute the actual prediction.
         doypr <- ssn(prdat)
