@@ -5,11 +5,455 @@ date: "`r format(Sys.Date(), format='%b %d, %Y)')`"
 output: pdf_document
 ---
 
-This is a quick demo of how to use the TempEst 2 model code.  Dependencies are
+# TempEst 2 User Guide
+
+This document provides a comprehensive guide for using the TempEst 2 (SCHEMA)
+stream water temperature estimation model. TempEst 2 estimates stream water
+temperature at any point using satellite remote sensing data.
+
+**Author's Note (Justin):** This codebase was developed during my time at CIROH.
+Below you'll find detailed instructions on how to use each component.
+
+---
+
+## Table of Contents
+1. [Prerequisites](#prerequisites)
+2. [Python Data Retrieval Scripts](#python-data-retrieval-scripts)
+3. [Data Format Requirements](#data-format-requirements)
+4. [Running the Model](#running-the-model)
+5. [Validation and Visualization](#validation-and-visualization)
+
+---
+
+## Prerequisites
+
+### R Dependencies
+Install the following R packages before running this notebook:
+
+```r
+install.packages(c("tidyverse", "fields", "geosphere", "lubridate", "zoo",
+                   "patchwork", "dataRetrieval", "sf", "gstat", "sp",
+                   "Metrics", "purrr", "effsize"))
+```
+
+### Python Dependencies
+For data retrieval from Google Earth Engine:
+
+```bash
+pip install earthengine-api
+```
+
+### Google Earth Engine Setup
+
+**Option A: Interactive Authentication (Recommended for new users)**
+
+For most users, you can authenticate interactively without needing a service account:
+
+```python
+import ee
+ee.Authenticate()  # Opens browser for Google login
+ee.Initialize()    # Initializes with your credentials
+```
+
+This is the simplest method - just run `ee.Authenticate()` once, and it will open
+your browser to log in with your Google account. After that, `ee.Initialize()`
+will work automatically.
+
+**Option B: Service Account Credentials (For automated/server use)**
+
+If you need to run scripts on a server or want persistent credentials, use a
+service account:
+
+1. Go to Google Cloud Console: https://console.cloud.google.com/
+2. Create a new project (or select existing)
+3. Enable the Earth Engine API for your project
+4. Go to "IAM & Admin" > "Service Accounts"
+5. Create a new service account
+6. Create a JSON key for the service account (downloads automatically)
+7. Register the service account with Earth Engine at:
+   https://signup.earthengine.google.com/#!/service_accounts
+
+Then update the Python scripts:
+```python
+service_account = 'your-account@your-project.iam.gserviceaccount.com'
+credentials = ee.ServiceAccountCredentials(service_account, '/path/to/your-key.json')
+ee.Initialize(credentials)
+```
+
+**Note:** The current scripts use hardcoded paths to a service account JSON file
+(e.g., `/Users/justin/Downloads/hogue-428318-8f3882796b90.json`). You will need
+to either:
+- Replace these paths with your own service account JSON path, OR
+- Comment out the service account lines and use `ee.Authenticate()` + `ee.Initialize()` instead
+
+---
+
+## Python Data Retrieval Scripts
+
+### Overview of Scripts
+
+There are **three main Python scripts** for retrieving environmental data:
+
+| Script | Purpose | Data Source | Output |
+|--------|---------|-------------|--------|
+| `eeretrieval.py` | Get LST, humidity, elevation, land cover | MODIS, NLDAS, ESA WorldCover | TempEst predictor data |
+| `precipitation.py` | Get daily precipitation | NASA NLDAS | precipitation CSV |
+| `weather.py` | Get cloud cover | NOAA NCEP DOE R2 | cloud cover CSV |
+
+---
+
+### 1. eeretrieval.py - Main Earth Engine Data Retrieval
+
+**Purpose:** Retrieves all predictor variables needed for TempEst 2 predictions.
+
+**Variables Retrieved:**
+- Land Surface Temperature (LST) from MODIS
+- Specific Humidity from NLDAS
+- Elevation from MERIT DEM
+- Land cover abundances (water, shrubland, grassland, barren) from ESA WorldCover
+
+**How to Use:**
+
+```python
+# 1. First, define your points of interest in newdatapts.py
+#    Format: [[[longitude, latitude], "point_id"], ...]
+#    Example:
+potomacdatapts = [
+    [[-78.56894, 39.52073], '1'],
+    [[-78.51559, 39.52358], '2'],
+    # ... more points
+]
+
+# 2. Update eeretrieval.py with your credentials:
+service_account = 'your-service-account@your-project.iam.gserviceaccount.com'
+credentials = ee.ServiceAccountCredentials(service_account, 'path/to/credentials.json')
+
+# 3. Set your date range:
+times = [(str(x), str(y+1),
+          str(dt.date(x, 1, 1) + dt.timedelta(y)),
+          str(dt.date(x, 1, 1) + dt.timedelta(y+1)))
+         for x in range(2020, 2024)  # Years to retrieve
+         for y in range(365)]         # Days of year
+
+# 4. Run the script:
+python eeretrieval.py
+```
+
+**Output:** CSV files saved to Google Drive folder (e.g., "MississippiData/AllData2020_1.csv")
+
+**Important Notes:**
+- Maximum 3000 GEE jobs can run at once
+- Use `wait` parameter to space out job submissions (20 seconds works for ~1300 points)
+- Data is saved to Google Drive, download and combine CSVs manually
+
+---
+
+### 2. precipitation.py - Precipitation Data
+
+**Purpose:** Retrieves daily total precipitation from NASA NLDAS.
+
+**How to Use:**
+
+```python
+# 1. Import your data points from newdatapts.py
+from newdatapts import potomacdatapts
+
+# 2. Update credentials (same as eeretrieval.py)
+
+# 3. Set date range:
+start_date = dt.date(2020, 1, 1)
+end_date = dt.date(2023, 12, 31)
+
+# 4. Set output file name:
+output_file = "precipitation_potomac.csv"
+
+# 5. Run the script:
+python precipitation.py
+```
+
+**Output CSV Format:**
+| point_id | lon | lat | date | precipitation |
+|----------|-----|-----|------|---------------|
+| Point1 | -78.56 | 39.52 | 2020-01-01 | 0.5 |
+
+---
+
+### 3. weather.py - Cloud Cover Data
+
+**Purpose:** Retrieves daily mean cloud cover from NOAA NCEP DOE Reanalysis 2.
+
+**How to Use:**
+
+```python
+# 1. Import your data points from newdatapts.py
+from newdatapts import potomacdatapts, sturgeon_pts
+
+# 2. Update credentials (same as eeretrieval.py)
+
+# 3. Set time range in the `times` variable:
+times = [(str(year), str(day + 1),
+          str(dt.date(year, 1, 1) + dt.timedelta(days=day)),
+          str(dt.date(year, 1, 1) + dt.timedelta(days=day + 1)))
+         for year in range(2020, 2023)
+         for day in range(365)]
+
+# 4. Set output file:
+output_file = "cloud_cover_potomacriver.csv"
+
+# 5. Run the script:
+python weather.py
+```
+
+**Output CSV Format:**
+| point_id | lon | lat | date | mean_cloud_cover |
+|----------|-----|-----|------|------------------|
+| Point 1 | -78.56 | 39.52 | 2020-01-01 | 45.2 |
+
+---
+
+## Defining Points of Interest (newdatapts.py)
+
+Create your river points in `newdatapts.py`. Each river needs a list of
+coordinate points along the stream reach.
+
+**Format for eeretrieval.py and precipitation.py:**
+```python
+river_pts = [
+    [[-longitude, latitude], "PointID"],
+    [[-78.56894, 39.52073], '1'],
+    [[-78.51559, 39.52358], '2'],
+    # ... continue for all points
+]
+```
+
+**Format for weather.py (note the nested list):**
+```python
+river_pts = [
+    [[-88.4918, 47.0322], "Point 1"],
+    [[-88.4983, 47.0291], "Point 2"],
+    # ...
+]
+```
+
+**Tips for defining points:**
+- Space points evenly along the river reach (e.g., every ~1km)
+- Include 50-100 points per river for good spatial coverage
+- Use Google Earth or QGIS to digitize points along the stream centerline
+
+---
+
+## Data Format Requirements for TempEst 2
+
+After retrieving data from Google Earth Engine, combine all CSVs and ensure
+your data frame has these columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | character | Point identifier |
+| lon | numeric | Longitude (decimal degrees East) |
+| lat | numeric | Latitude (decimal degrees North) |
+| date | Date | Date of observation |
+| day | integer | Julian day (1-366) |
+| elevation | numeric | Mean elevation in 500m radius (meters) |
+| lst | numeric | Land surface temperature (Celsius) |
+| humidity | numeric | Specific humidity (kg/kg) |
+| water | numeric | Water land cover abundance (0-1) |
+| shrubland | numeric | Shrubland abundance (0-1) |
+| grassland | numeric | Grassland abundance (0-1) |
+| barren | numeric | Barren land abundance (0-1) |
+
+**Example R code to prepare data:**
+```r
+data <- map_dfr(
+  list.files("data/YourRiverData", full.names = TRUE),
+  \(fn) read_csv(fn, col_types="cDddddddddd") %>%
+    mutate(day = as.integer(format(date, "%j"))) %>%
+    filter(lst > -273)  # Filter invalid LST values
+)
+```
+
+---
+
+## Complete Execution Pipeline
+
+Follow these phases IN ORDER. Each phase depends on the previous one.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        EXECUTION PIPELINE                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  PHASE 0: Data Collection (Python - Run BEFORE opening this notebook)   │
+│  ├── 0.1 Define points in newdatapts.py                                  │
+│  ├── 0.2 Run eeretrieval.py → Downloads to Google Drive                  │
+│  ├── 0.3 Run precipitation.py → Creates precipitation CSV                │
+│  ├── 0.4 Run weather.py → Creates cloud cover CSV                        │
+│  └── 0.5 Download CSVs from Google Drive to data/ folder                 │
+│                                                                          │
+│  PHASE 1: Setup (R - Lines ~277-294)                                     │
+│  └── Load all R libraries                                                │
+│                                                                          │
+│  PHASE 2: Load Earth Engine Data (R - Lines ~312-336)                    │
+│  └── Read predictor CSVs from data/ folders                              │
+│                                                                          │
+│  PHASE 3: Load Cloud Cover & Gage Data (R - Lines ~339-364)              │
+│  ├── Read cloud cover CSVs                                               │
+│  └── Read USGS gage data (or download via dataRetrieval)                 │
+│                                                                          │
+│  PHASE 4: Run TempEst Model (R - Lines ~824-835)                         │
+│  ├── load("model.rda")                                                   │
+│  └── predictions <- model(data)                                          │
+│                                                                          │
+│  PHASE 5: Merge All Data (R - Lines ~836-873)                            │
+│  └── Join predictions + cloud cover + precipitation                      │
+│                                                                          │
+│  PHASE 6: Add Weather Conditions (R - Lines ~636-691)                    │
+│  └── Categorize: "Cloudy", "Raining and Cloudy", "No Clouds or Rain"     │
+│                                                                          │
+│  PHASE 7: Interpolation (R - Lines ~875-990)                             │
+│  └── Fill gaps in time series using linear interpolation                 │
+│                                                                          │
+│  PHASE 8: Validation & Visualization (R - Lines ~992-2068)               │
+│  ├── Compare gage vs model temperatures                                  │
+│  ├── Statistical analysis (RMSE, MAE, Cohen's d)                         │
+│  └── Generate plots                                                      │
+│                                                                          │
+│  PHASE 9: Training New Model (Optional - Lines ~2323-2547)               │
+│  └── model <- full.schema()(training_data)                               │
+│                                                                          │
+│  PHASE 10: Machine Learning (Optional - Lines ~2734-2777)                │
+│  └── Train RNN using keras                                               │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Detailed Step-by-Step Instructions
+
+### PHASE 0: Data Collection (Python)
+
+**Run these BEFORE opening demo.Rmd in RStudio.**
+
+#### Step 0.1: Define Your River Points
+Edit `newdatapts.py` to add your river coordinates:
+```python
+my_river_pts = [
+    [[-longitude, latitude], "PointID"],
+    # Add 50-100 points along your river
+]
+```
+
+#### Step 0.2: Retrieve Main Predictor Data
+```bash
+# Edit eeretrieval.py:
+# - Update service_account and credentials path
+# - Set date range in 'times' variable
+# - Import your points from newdatapts.py
+python eeretrieval.py
+```
+This exports CSVs to Google Drive. **Wait for GEE jobs to complete**, then
+download all CSVs and place in `data/YourRiverData/` folder.
+
+#### Step 0.3: Retrieve Precipitation Data
+```bash
+# Edit precipitation.py:
+# - Update the import to use your points
+# - Set start_date and end_date
+# - Set output_file name
+python precipitation.py
+```
+Creates: `precipitation_yourriver.csv`
+
+#### Step 0.4: Retrieve Cloud Cover Data
+```bash
+# Edit weather.py:
+# - Update the import to use your points
+# - Set years in 'times' variable
+# - Set output_file name
+python weather.py
+```
+Creates: `cloud_cover_yourriver.csv`
+
+---
+
+### PHASE 1-8: R Analysis (In This Notebook)
+
+Run the code chunks in order. Key sections:
+
+| Phase | What It Does | Key Variables Created |
+|-------|--------------|----------------------|
+| 1 | Load libraries | - |
+| 2 | Load GEE predictor data | `dataSR`, `data2`, `data3`, `data4` |
+| 3 | Load cloud/gage data | `cloud_dataSR`, `gage_dataSR` |
+| 4 | Run TempEst model | `predSR`, `pred2`, `pred3`, `pred4` |
+| 5 | Merge predictions + cloud | `merged_dataSR`, `merged_data2`, etc. |
+| 6 | Add weather categories | `merged_data_weatherSR` |
+| 7 | Interpolate gaps | `df_interp`, `df_interp_gage` |
+| 8 | Validation plots | Various ggplot outputs |
+
+---
+
+### Quick Start for New River
+
+If you want to analyze a **new river**, here's the minimum you need:
+
+1. **Python (before R):**
+   ```bash
+   # Add points to newdatapts.py, then:
+   python eeretrieval.py      # Wait for GEE, download CSVs
+   python precipitation.py
+   python weather.py
+   ```
+
+2. **R (in this notebook):**
+   ```r
+   # Phase 1: Load libraries (run setup chunk)
+   source("model.R")
+
+   # Phase 2: Load your GEE data
+   my_data <- map_dfr(
+     list.files("data/MyRiverData", full.names = TRUE),
+     \(fn) read_csv(fn) %>% mutate(day = as.integer(format(date, "%j")))
+   )
+
+   # Phase 3: Load cloud/gage data
+   cloud_data <- read.csv("cloud_cover_myriver.csv")
+   gage_data <- read_csv("MyRiverGageData.csv")
+
+   # Phase 4: Run model
+   load("model.rda")
+   predictions <- model(my_data)
+
+   # Phase 5: Merge
+   merged <- predictions %>%
+     left_join(cloud_data, by = c("id", "date"))
+   ```
+
+---
+
+## Original Demo Content
+
+This is a quick demo of how to use the TempEst 2 model code. Dependencies are
 `tidyverse` and `fields`, both imported by `model.R`.
 
 ```{r setup, warning=FALSE, message=FALSE}
 source("model.R")
+library(tidyverse)
+library(geosphere)
+library(lubridate)
+library(zoo)
+library(patchwork)
+library(dataRetrieval)
+library(sf)
+library(gstat)
+library(sp)
+library(dplyr)
+library(tidyr)
+library(Metrics)
+library(purrr)
+#statistical analysis
+library(effsize)
 ```
 
 
@@ -29,12 +473,506 @@ long-term data to generate seasonality estimates.  Otherwise, the only modificat
 is to add a `day` column (e.g., `as.integer(format(date, "%j")))`).
 
 ```{r}
-data <- map_dfr(
-  list.files("GEEData/", full.names = T),
+dataSR <- map_dfr(
+  list.files("data/TempEstData", full.names = TRUE),
   \(fn) read_csv(fn, col_types="cDddddddddd") %>%
     mutate(day = as.integer(format(date, "%j"))) %>%
     filter(lst > -273)  # filters errors
 )
+data2 <- map_dfr(
+  list.files("data/potomacriverdata", full.names = TRUE),
+  \(fn) read_csv(fn, col_types="cDddddddddd") %>%
+    mutate(day = as.integer(format(date, "%j"))) %>%
+    filter(lst > -273)  # filters errors
+)
+data3 <- map_dfr(
+  list.files("data/DRData", full.names = TRUE),
+  \(fn) read_csv(fn, col_types="cDddddddddd") %>%
+    mutate(day = as.integer(format(date, "%j"))) %>%
+    filter(lst > -273)  # filters errors
+)
+data4 <- map_dfr(
+  list.files("data/SRData", full.names = TRUE),
+  \(fn) read_csv(fn, col_types="cDddddddddd") %>%
+    mutate(day = as.integer(format(date, "%j"))) %>%
+    filter(lst > -273)  # filters errors
+)
+```
+#Gets cloud cover and gage data for River you provided 
+```{r}
+cloud_dataSR <- read.csv("cloud_cover_data.csv")
+gage_dataSR <- read_csv("RoaringForkGageData.csv")
+
+
+
+gage_dataSR <- gage_dataSR %>%
+  mutate(date = as.character(date))
+```
+
+```{r}
+cloud_data2 <- read.csv("cloud_cover_delawareriver.csv")
+gage_data2 <- read_csv("DelawareDataGage.csv")
+gage_data2 <- gage_data2 %>%
+  mutate(date = as.character(date))
+
+
+cloud_data3 <- read.csv("cloud_cover_sturgeonriver.csv")
+gage_data3 <- read_csv("SturgeonDataGage.csv")
+gage_data3 <- gage_data3 %>%
+  mutate(date = as.character(date))
+
+cloud_data4 <- read.csv("cloud_cover_potomacriver.csv")
+gage_data4 <- read_csv("PotomacDataGage.csv")
+gage_data4 <- gage_data4 %>%
+  mutate(date = as.character(date))
+```
+
+```{r}
+gage_data_date <- gage_data %>%
+  left_join(cloud_data %>% select(date, mean_cloud_cover), by = "date") %>% 
+  filter(date == ("2023-07-31"))
+ggplot() +
+  # Gage
+  geom_point(data = gage_data_date, aes(x = lon, y = lat, color = temperature, size = mean_cloud_cover), shape = 17) +
+  # TempEst
+  geom_point(data = filtered_data_date, aes(x = lon.x, y = lat.x, color = temp.mod, size = mean_cloud_cover), shape = 16, alpha = 0.6) +
+  scale_color_viridis_c(option = "plasma", name = "Temperature (C)") +
+  scale_size_continuous(range = c(2, 10), name = "Cloud Cover") +
+  theme_minimal() +
+  labs(
+    title = paste("Gage vs Model Temperature with Cloud Cover on", gage_data_date$date),
+    x = "Longitude",
+    y = "Latitude",
+    color = "Temperature (°C)",
+    size = "Mean Cloud Cover (%)"
+  )
+```
+```{r}
+gage_data <- gage_data %>%
+  mutate(date = as.Date(date))
+
+filtered_data <- filtered_data %>%
+  mutate(date = as.Date(date))
+
+# Specify the month and year for filtering
+specific_month <- 7  # July
+specific_year <- 2023  # Corrected from 2023 to 2022
+
+# Filter the data for the specified month and year
+gage_data_filtered <- gage_data %>%
+  filter(month(date) == specific_month & year(date) == specific_year)
+
+filtered_data_filtered <- merged_data %>%
+  filter(month(date) == specific_month & year(date) == specific_year)
+ggplot() +
+  # Gage data
+  geom_line(
+    data = gage_data_filtered,
+    aes(x = date, y = temperature, color = "Gage"),
+    linewidth = 1,
+    linetype = "dotted"
+  ) +
+  # TempEst data
+  geom_line(
+    data = filtered_data_filtered,
+    aes(x = date, y = temp.mod, color = "TempEst"),
+    linewidth = 1,
+    linetype = "dotted"
+  ) +
+  scale_color_manual(
+    values = c("Gage" = "darkgreen", "TempEst" = "orange"),
+    name = "Source"
+  ) +
+  # Apply minimal theme with increased font sizes
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 22, face = "bold"),
+    axis.title = element_text(size = 18),
+    axis.text = element_text(size = 16),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16)
+  ) +
+  # Add labels
+  labs(
+    title = paste("Gage vs TempEst Temperature for", month.name[specific_month], specific_year),
+    x = "Date",
+    y = "Temperature (°C)"
+  )
+```
+```{r}
+precip_data <- read_csv("precipitation_data.csv")
+precip_data <- precip_data %>%
+  mutate(date = as.Date(date))
+cloud_data <- cloud_data %>%
+  mutate(date = as.Date(date))
+specific_month <- 7    
+specific_year <- 2023
+precip_data_july <- precip_data %>%
+  filter(month(date) == specific_month & year(date) == specific_year)
+cloud_data_july <- cloud_data %>%
+  filter(month(date) == specific_month & year(date) == specific_year)
+combined_data <- left_join(precip_data_july, cloud_data_july, by = "date")
+combined_long <- combined_data %>%
+  select(date, precipitation, mean_cloud_cover) %>%
+  pivot_longer(cols = c(precipitation, mean_cloud_cover), names_to = "Variable", values_to = "Value")
+
+ggplot(combined_long, aes(x = date, y = Value)) +
+  geom_line(linetype = "dotted") +
+  facet_wrap(~ Variable, ncol = 1, scales = "free_y") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 22, face = "bold"),
+    strip.text = element_text(size = 18),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14)
+  ) +
+  labs(
+    title = paste("Precipitation and Mean Cloud Cover in", month.name[specific_month], specific_year),
+    x = "Date",
+    y = ""
+  )
+#correlation <- cor.test(combined_data$precipitation, combined_data$mean_cloud_cover, use = "complete.obs")
+#print(correlation)
+```
+
+```{r}
+# Filter the data for July 2023 and create date_no_year column
+merged_data_weatherSR <- merged_data_weatherSR %>%
+  filter(format(date, "%Y-%m") == "2022-07") %>%
+  mutate(date_no_year = format(date, "%m-%d"))
+
+# Step 1: Calculate the seasonal trend (mean temperature for each day of the year)
+seasonal_trend <- merged_data_weatherSR %>%
+  group_by(date_no_year) %>%
+  summarise(mean_temp = mean(temp.mod, na.rm = TRUE))
+
+# Step 2: Join seasonal trend back to the data and calculate temperature anomaly
+merged_data_weatherSR <- merged_data_weatherSR %>%
+  left_join(seasonal_trend, by = "date_no_year") %>%
+  mutate(temp_anomaly = temp.mod - mean_temp)  # Calculate anomaly
+
+# Step 3: Scale and normalize the temperature data
+merged_data_weatherSR <- merged_data_weatherSR %>%
+  group_by(date) %>%
+  mutate(temp_scaled = (temp.mod - mean(temp.mod, na.rm = TRUE)) / sd(temp.mod, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(temp_normalized = (temp.mod - min(temp.mod, na.rm = TRUE)) /
+                           (max(temp.mod, na.rm = TRUE) - min(temp.mod, na.rm = TRUE)))
+
+# View the first few rows to check
+head(merged_data_weatherSR)
+ggplot(merged_data_weatherSR, aes(x = weather_condition, y = temp_anomaly, fill = weather_condition)) +
+  geom_boxplot() +
+  labs(
+    title = "Temperature Anomalies by Weather Condition in July 2023",
+    x = "Weather Condition",
+    y = "Temperature Anomaly (°C)"
+  ) +
+  theme_minimal() +
+  scale_fill_viridis_d(name = "Weather Condition")
+
+
+```
+# Create the categorical plot comparing temperature by weather condition
+```{r}
+merged_data_weatherSR <- merged_data_weatherSR %>%
+  filter(
+    date >= as.Date("2023-07-01") & date <= as.Date("2023-07-31"),
+    !is.na(weather_condition)
+  )
+#box plot 
+ggplot(merged_data_weatherSR, aes(x = weather_condition, y = temp.mod, fill = weather_condition)) +
+  geom_boxplot() +
+  scale_fill_viridis_d(name = "Weather Condition") +
+  theme_minimal() +
+  labs(
+    title = "Temperature Comparison by Weather Condition in July 2023",
+    x = "Weather Condition",
+    y = "Temperature (°C)"
+  )
+
+
+```
+```{r}
+
+# Step 1: Filter data for July 2023
+merged_data_weatherSR <- merged_data_weatherSR %>%
+  filter(date >= as.Date("2022-07-01") & date <= as.Date("2022-12-31"))
+
+temp_trend <- lm(temp.mod ~ date, data = merged_data_weatherSR)
+
+merged_data_weatherSR <- merged_data_weatherSR %>%
+  mutate(
+    temp_detrended = temp.mod - predict(temp_trend)  # Subtract the predicted trend
+  )
+ggplot(merged_data_weatherSR, aes(x = date, y = temp_detrended, color = weather_condition)) +
+  geom_point(size = 3, alpha = 0.7) +  
+  scale_color_viridis_d(name = "Weather Condition") +
+  theme_minimal() +
+  labs(
+    title = "Detrended Temperature Time Series Colored by Weather Condition (July 2023)",
+    x = "Date",
+    y = "Detrended Temperature (°C)"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)  
+  )
+
+
+```
+# Excluding the TempEST 
+```{r}
+gage_dataSR <- gage_dataSR %>%
+  mutate(date = as.Date(date))
+gage_dataSR <- gage_dataSR %>%
+  left_join(select(merged_data_weatherSR, date, weather_condition), by = "date")
+
+specific_month <- 7  
+specific_year <- 2022 
+
+# Filter only the gage data for July 2023
+gage_data_filtered <- gage_dataSR %>%
+  filter(month(date) == specific_month & year(date) == specific_year)
+
+gage_temp_trend <- lm(temperature ~ date, data = gage_data_filtered)
+
+gage_data_filtered <- gage_data_filtered %>%
+  mutate(temp_detrended = temperature - predict(gage_temp_trend))
+
+ggplot(gage_data_filtered, aes(x = date, y = temp_detrended, color = weather_condition)) +
+  geom_point(size = 3, alpha = 0.7) +
+  scale_color_viridis_d(name = "Weather Condition") +
+  theme_minimal() +
+  labs(
+    title = paste("Detrended Temperature Time Series Colored by Weather Condition (July 2023)"),
+    x = "Date",
+    y = "Detrended Temperature (°C)"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)  
+  )
+
+```
+#Annual Plot For TempEST, Cloud Cover, Precipitation
+```{r}
+merged_data_weatherSR <- merged_data_weatherSR %>%
+  filter(date >= as.Date("2022-01-01") & date <= as.Date("2022-12-31"))
+
+ggplot(merged_data_weatherSR, aes(x = date, y = temp.mod, color = weather_condition)) +
+  geom_point(size = 2.5, alpha = 0.7) +
+  scale_color_viridis_d(name = "Weather Condition") +
+  theme_minimal() +
+  labs(
+    title = "Temperature Time Series Colored by Weather Condition (2022)",
+    x = "Date",
+    y = "Modeled Temperature (°C)"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+#Annual excluding TempEST
+```{r}
+gage_dataSR <- gage_dataSR %>%
+  mutate(date = as.Date(date)) %>%
+  left_join(select(merged_data_weatherSR, date, weather_condition), by = "date")
+
+gage_data_filtered <- gage_dataSR %>%
+  filter(year(date) == 2022)
+
+# Plot raw temperature, no detrending
+ggplot(gage_data_filtered, aes(x = date, y = temperature, color = weather_condition)) +
+  geom_point(size = 3, alpha = 0.7) +
+  scale_color_viridis_d(name = "Weather Condition") +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+  theme_minimal() +
+  labs(
+    title = "Temperature Time Series Colored by Weather Condition (2022, Gage Data)",
+    x = "Date",
+    y = "Temperature (°C)"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+# Adds the precipitation and cloud cover conditioning column(run before interpolation and scatter plot)
+```{r}
+# Load and preprocess precipitation data
+precipitation_dataSR <- read_csv("precipitation_data.csv") %>%
+  mutate(date = as.Date(date)) %>%
+  group_by(date) %>%
+  summarise(precipitation = sum(precipitation, na.rm = TRUE))
+# Join precipitation data with merged data
+merged_data_weatherSR <- merged_dataSR %>%
+  left_join(precipitation_dataSR, by = "date")
+# Define thresholds
+precip_threshold <- 0
+cloud_threshold <- 30
+
+# Add weather condition column
+merged_data_weatherSR <- merged_data_weatherSR %>%  # Use merged_data_weather here
+  mutate(
+    weather_condition = case_when(
+      precipitation > precip_threshold & mean_cloud_cover > cloud_threshold ~ "Raining and Cloudy",
+      precipitation <= precip_threshold & mean_cloud_cover > cloud_threshold ~ "Cloudy",
+      mean_cloud_cover <= cloud_threshold ~ "No Clouds or Rain",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(weather_condition = factor(weather_condition, 
+                                    levels = c("No Clouds or Rain", "Cloudy", "Raining and Cloudy")))
+                                  
+```
+
+```{r}
+# Load and preprocess precipitation data
+precipitation_data4 <- read_csv("precipitation_dataSR.csv") %>%
+  mutate(date = as.Date(date)) %>%
+  group_by(date) %>%
+  summarise(precipitation = sum(precipitation, na.rm = TRUE))
+# Join precipitation data with merged data
+merged_data_weather4 <- merged_data4 %>%
+  left_join(precipitation_data2, by = "date")
+# Define thresholds
+precip_threshold <- 0
+cloud_threshold <- 30
+
+# Add weather condition column
+merged_data_weather4 <- merged_data_weather4 %>%  # Use merged_data_weather here
+  mutate(
+    weather_condition = case_when(
+      precipitation > precip_threshold & mean_cloud_cover > cloud_threshold ~ "Raining and Cloudy",
+      precipitation <= precip_threshold & mean_cloud_cover > cloud_threshold ~ "Cloudy",
+      mean_cloud_cover <= cloud_threshold ~ "No Clouds or Rain",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(weather_condition = factor(weather_condition, 
+                                    levels = c("No Clouds or Rain", "Cloudy", "Raining and Cloudy")))
+          
+```
+
+#Scatter quantile plot with gage data
+``` {r }
+gage_dataSR <- read_csv('PotomacDataGage.csv')
+gage_dataSR <- gage_dataSR %>%
+  mutate(date = as.Date(date)) %>%
+  left_join(select(merged_data_weatherSR, date, weather_condition), by = "date")
+gage_data_filtered <- gage_dataSR %>%
+  filter(year(date) == 2022) %>%
+  mutate(
+    day_of_year = yday(date),
+    weather_condition = case_when(
+      is.na(weather_condition)                ~ "No Cloud/Rain",
+      weather_condition == "No Clouds or Rain" ~ "No Cloud/Rain",
+      weather_condition == "Cloudy"            ~ "Cloudy",
+      weather_condition == "Raining and Cloudy"~ "Cloudy",   
+      TRUE                                    ~ as.character(weather_condition)
+    )
+  )
+river_name <- "Potomac River"  
+plot_year <- unique(lubridate::year(gage_data_filtered$date))
+plot_year <- unique(lubridate::year(gage_data_filtered$date))
+# Reshape gage_summary for wide format to compare q50 for both conditions by day
+gage_summary_wide <- gage_summary %>%
+  filter(weather_condition %in% c("Cloudy", "No Cloud/Rain")) %>%
+  select(day_of_year, weather_condition, q50) %>%
+  tidyr::pivot_wider(names_from = weather_condition, values_from = q50)
+#medians
+cloudy_median <- median(gage_summary$q50[gage_summary$weather_condition == "Cloudy"], na.rm = TRUE)
+nocloud_median <- median(gage_summary$q50[gage_summary$weather_condition == "No Cloud/Rain"], na.rm = TRUE)
+diff_median <- cloudy_median - nocloud_median
+
+# Calculate R-squared for median temps on same days
+matching_days <- na.omit(gage_summary_wide)
+perf_metric <- cor(matching_days$Cloudy, matching_days$`No Cloud/Rain`)^2
+#cohen d analysis
+
+cohen_d <- cohen.d(
+  gage_data_filtered$temperature[gage_data_filtered$weather_condition == "Cloudy"],
+  gage_data_filtered$temperature[gage_data_filtered$weather_condition == "No Cloud/Rain"]
+)
+ci_lower <- cohen_d$conf.int[1]
+ci_upper <- cohen_d$conf.int[2]
+
+gage_summary <- gage_data_filtered %>%
+  group_by(day_of_year, weather_condition) %>%
+  summarise(
+    q10 = quantile(temperature, 0.10, na.rm = TRUE),
+    q25 = quantile(temperature, 0.25, na.rm = TRUE),
+    q50 = quantile(temperature, 0.50, na.rm = TRUE),
+    q75 = quantile(temperature, 0.75, na.rm = TRUE),
+    q90 = quantile(temperature, 0.90, na.rm = TRUE),
+    .groups = "drop"
+  )
+gage_summary_long <- gage_summary %>%
+  pivot_longer(
+    cols = starts_with("q"),
+    names_to = "quantile",
+    values_to = "temperature"
+  )
+
+ggplot(gage_summary, aes(x = day_of_year)) +
+  # 80% quantile band
+  geom_ribbon(aes(ymin = q10, ymax = q90, fill = weather_condition), alpha = 0.3) +
+  # 50% quantile band
+  geom_ribbon(aes(ymin = q25, ymax = q75, fill = weather_condition), alpha = 0.5) +
+  # Median line
+  geom_line(aes(y = q50, color = weather_condition), size = 1.2) +
+  # Quantile scatter points
+  geom_point(
+    data = gage_summary_long,
+    aes(y = temperature, shape = quantile, color = weather_condition),
+    size = 1.2,
+    position = position_jitter(width = 0.8, height = 0) 
+  ) +
+    scale_fill_manual(values = c(
+    "Cloudy" = "gold",
+    "Clear" = "gray70",
+    "No Cloud/Rain" = "gray60"
+  )) +
+  scale_color_manual(values = c(
+    "Cloudy" = "orange3",
+    "Clear" = "black",
+    "No Cloud/Rain" = "gray30"
+  )) +
+
+  scale_shape_manual(values = c(
+    "q10" = 1, 
+    "q25" = 2, 
+    "q50" = 16, 
+    "q75" = 17, 
+    "q90" = 15)) +
+  scale_x_continuous(
+    breaks = seq(0, 366, by = 90),
+    expand = c(0, 0)
+  ) +
+  scale_y_continuous(
+    breaks = seq(
+      floor(min(gage_summary_long$temperature, na.rm = TRUE)),
+      ceiling(max(gage_summary_long$temperature, na.rm = TRUE)),
+      by = 5
+    ),
+    expand = c(0, 0)
+  ) +
+  
+  labs(
+  title = sprintf("Daily Temperature Quantiles by Weather Condition (%s, %s)", river_name, plot_year),
+  subtitle = sprintf(
+  "Median Temp R² (Cloudy vs. No Cloud/Rain): %s\nMedian Temp Difference (Cloudy - No Cloud/Rain): %.2f°C\nCohen's d: %.2f (95%% CI: %.2f, %.2f) ",
+  ifelse(is.na(perf_metric), "NA", sprintf("%.2f", perf_metric)),
+  diff_median,
+  cohen_d$estimate, ci_lower, ci_upper
+),
+
+  x = "Day of Year",
+  y = "Temperature (°C)",
+  color = "Weather Condition",
+  fill = "Weather Condition",
+  shape = "Quantile"
+)+
+  theme_minimal()
 ```
 
 
@@ -48,29 +986,1502 @@ and adds the columns `temp.doy` (day-of-year mean temperature), `temp.anom`
 
 ```{r message=FALSE}
 load("model.rda")
-pred <- model(data) %>% drop_na
+predSR <- model(dataSR) %>% drop_na()
+```
+```{r}
+load("model.rda")
+pred2 <- model(data2) %>% drop_na()
+load("model.rda")
+pred3 <- model(data3) %>% drop_na()
+load("model.rda")
+pred4 <- model(data4) %>% drop_na()
+```
+```{r}
+predSR <- predSR %>%
+  mutate(id = as.numeric(id), date = as.Date(date))
+cloud_dataSR <- cloud_dataSR%>%
+  mutate(id = as.numeric(gsub("Point", "", point_id)), 
+    date = as.Date(date, format = "%Y-%m-%d")) %>%
+  select(-point_id)
+merged_dataSR <- left_join(predSR, cloud_dataSR, by = c("id", "date"))
+head(merged_dataSR)
 ```
 
-```{r message=FALSE}
-pred %>%
+```{r}
+pred2 <- pred2 %>%
+  mutate(id = as.numeric(id), date = as.Date(date))
+cloud_data2 <- cloud_data2%>%
+  mutate(id = as.numeric(gsub("Point", "", point_id)), 
+    date = as.Date(date, format = "%Y-%m-%d")) %>%
+  select(-point_id)
+merged_data2 <- left_join(pred2, cloud_data2, by = c("id", "date"))
+head(merged_data2)
+
+pred3 <- pred3 %>%
+  mutate(id = as.numeric(id), date = as.Date(date))
+cloud_data3 <- cloud_data3%>%
+  mutate(id = as.numeric(gsub("Point", "", point_id)), 
+    date = as.Date(date, format = "%Y-%m-%d")) %>%
+  select(-point_id)
+merged_data3 <- left_join(pred3, cloud_data3, by = c("id", "date"))
+head(merged_data3)
+
+pred4 <- pred4 %>%
+  mutate(id = as.numeric(id), date = as.Date(date))
+cloud_data4 <- cloud_data4%>%
+  mutate(id = as.numeric(gsub("Point", "", point_id)), 
+    date = as.Date(date, format = "%Y-%m-%d")) %>%
+  select(-point_id)
+merged_data4 <- left_join(pred4, cloud_data4, by = c("id", "date"))
+head(merged_data4)
+```
+#interpolation for single river(based off TempEst2)
+```{r}
+
+df_keyed <- merged_data_weatherSR %>%
+  mutate(station_key = paste0(round(lat.x, 4), "_", round(lon.x, 4)))
+
+station_coords <- df_keyed %>%
+  filter(!is.na(lat.x) & !is.na(lon.x)) %>%
+  group_by(station_key) %>%
+  summarise(
+    lat.x = mean(lat.x, na.rm = TRUE),
+    lon.x = mean(lon.x, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+df_daily <- df_keyed %>%
+  group_by(station_key, date) %>%
+  summarise(
+    lst      = mean(lst, na.rm = TRUE),
+    humidity = mean(humidity, na.rm = TRUE),
+    temp.mod = mean(temp.mod, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+df_complete <- df_daily %>%
+  group_by(station_key) %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  arrange(station_key, date)
+df_interp <- df_complete %>%
+  group_by(station_key) %>%
+  arrange(date) %>%
+  # store original in a new column
+  mutate(temp_orig = temp.mod,
+         lst_orig = lst,
+         humidity_orig = humidity) %>%
+  # do interpolation into separate cols
+  mutate(
+    lst_interp = na.approx(lst, x = as.numeric(date), na.rm = FALSE, rule = 2),
+    humidity_interp = na.approx(humidity, x = as.numeric(date), na.rm = FALSE, rule = 2),
+    temp_interp = na.approx(temp.mod, x = as.numeric(date), na.rm = FALSE, rule = 2)
+  ) %>%
+  # now choose original where available, else interpolated
+  mutate(
+    lst      = if_else(!is.na(lst_orig), lst_orig, lst_interp),
+    humidity = if_else(!is.na(humidity_orig), humidity_orig, humidity_interp),
+    temp.mod = if_else(!is.na(temp_orig), temp_orig, temp_interp)
+  ) %>%
+  ungroup() %>%
+  select(-ends_with("_orig"), -ends_with("_interp"))
+
+# then re-join coords
+df_interp <- df_interp %>%
+  left_join(station_coords, by = "station_key")
+
+
+
+```
+#interpolation for four rivers in one binded stack(based off TempEst2)
+```{r}
+merged_all <- bind_rows(
+  merged_data_weatherSR,
+  merged_data_weather2,
+  merged_data_weather3,
+  merged_data_weather4
+)
+df_keyed_all <- merged_all %>%
+  mutate(station_key = paste0(round(lat.x, 4), "_", round(lon.x, 4)))
+
+station_coords <- df_keyed %>%
+  filter(!is.na(lat.x) & !is.na(lon.x)) %>%
+  group_by(station_key) %>%
+  summarise(
+    lat.x = mean(lat.x, na.rm = TRUE),
+    lon.x = mean(lon.x, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+df_daily <- df_keyed %>%
+  group_by(station_key, date) %>%
+  summarise(
+    lst      = mean(lst, na.rm = TRUE),
+    humidity = mean(humidity, na.rm = TRUE),
+    temp.mod = mean(temp.mod, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+df_complete <- df_daily %>%
+  group_by(station_key) %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  arrange(station_key, date)
+df_interp_all <- df_complete %>%
+  group_by(station_key) %>%
+  arrange(date) %>%
+  # store original in a new column
+  mutate(temp_orig = temp.mod,
+         lst_orig = lst,
+         humidity_orig = humidity) %>%
+  # do interpolation into separate cols
+  mutate(
+    lst_interp = na.approx(lst, x = as.numeric(date), na.rm = FALSE, rule = 2),
+    humidity_interp = na.approx(humidity, x = as.numeric(date), na.rm = FALSE, rule = 2),
+    temp_interp = na.approx(temp.mod, x = as.numeric(date), na.rm = FALSE, rule = 2)
+  ) %>%
+  # now choose original where available, else interpolated
+  mutate(
+    lst      = if_else(!is.na(lst_orig), lst_orig, lst_interp),
+    humidity = if_else(!is.na(humidity_orig), humidity_orig, humidity_interp),
+    temp.mod = if_else(!is.na(temp_orig), temp_orig, temp_interp)
+  ) %>%
+  ungroup() %>%
+  select(-ends_with("_orig"), -ends_with("_interp"))
+
+# then re-join coords
+df_interp_all <- df_interp_all %>%
+  left_join(station_coords, by = "station_key")
+
+```
+#interpolation based off gage
+```{r}
+
+gage_df <- gage_dataSR %>%
+  mutate(
+    station_key = id,              # use the gage ID as station_key
+    date        = as.Date(date)
+  )
+
+# Pull unique IDs and fetch their coordinates
+unique_ids <- unique(gage_df$id)
+gage_meta  <- readNWISsite(unique_ids) %>%
+  select(id = site_no, lat.x = dec_lat_va, lon.x = dec_long_va)
+
+# Join coords back to the gage series
+gage_keyed <- gage_df %>%
+  left_join(gage_meta, by = "id")
+
+# Collapse to one daily value per station_key
+df_daily_gage <- gage_keyed %>%
+  group_by(station_key, date) %>%
+  summarize(
+    temp.mod = mean(temperature, na.rm = TRUE),
+    .groups   = "drop"
+  )
+
+# Complete the full date sequence per gauge
+df_complete_gage <- df_daily_gage %>%
+  group_by(station_key) %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  ungroup()
+
+# Interpolate missing days, preserving originals
+df_interp_gage <- df_complete_gage %>%
+  group_by(station_key) %>%
+  arrange(date) %>%
+  mutate(
+    temp_orig   = temp.mod,
+    temp_interp = na.approx(
+                    temp.mod,
+                    x      = as.numeric(date),
+                    na.rm  = FALSE,
+                    rule   = 2
+                  ),
+    temp.mod    = if_else(!is.na(temp_orig), temp_orig, temp_interp)
+  ) %>%
+  ungroup() %>%
+  select(-temp_orig, -temp_interp)
+
+# Reattach the coordinates
+df_interp_gage <- df_interp_gage %>%
+  left_join(
+    gage_meta %>% rename(station_key = id),
+    by = "station_key"
+  )
+
+# Inspect the result
+glimpse(df_interp_gage)
+
+```
+#gage interpolation(where it is only na) vs tempest2(only interpolated when it is needed too)
+```{r}
+
+
+
+# Build your grid and gauge location tables:
+
+grid_pts <- df_interp %>%
+  distinct(grid_key  = station_key,
+           lat.grid  = lat.x,
+           lon.grid  = lon.x)
+
+# Suppose you pulled your gauge metadata like this:
+gage_meta <- readNWISsite(unique(gage_dataSR$id)) %>%
+  select(
+    station_key = site_no,
+    lat_gage    = dec_lat_va,
+    lon_gage    = dec_long_va
+  )
+
+# 1. Map each gauge to its nearest grid point:
+targets <- gage_meta %>%
+  rowwise() %>%
+  mutate(
+    grid_key = grid_pts$grid_key[
+      which.min(
+        distHaversine(
+          c(lon_gage, lat_gage),
+          cbind(grid_pts$lon.grid, grid_pts$lat.grid)
+        )
+      )
+    ]
+  ) %>%
+  ungroup() %>%
+  select(station_key, grid_key)
+
+# 2. Prepare the two time series:
+
+# Gauge-interpolated series (from your hold‐out pipeline)
+gage_ts <- df_interpolated %>%
+  rename(temp_gage = temp_pred) %>%
+  select(station_key, date, temp_gage)
+
+# TempEST2 grid series
+model_ts <- df_interp %>%
+  rename(
+    grid_key   = station_key,
+    temp_model = temp.mod
+  ) %>%
+  select(grid_key, date, temp_model)
+
+# 3. Join them all together by matching gauge→grid and by date:
+comparison <- targets %>%
+  inner_join(gage_ts,  by = "station_key") %>%    # gauge series
+  inner_join(model_ts, by = c("grid_key", "date"))  # model series
+
+# 4. Compute summary statistics:
+
+# Per‐gage
+gage_summary <- comparison %>%
+  group_by(station_key) %>%
+  summarize(
+    mean_bias = mean(temp_model - temp_gage, na.rm = TRUE),
+    RMSE      = rmse(temp_gage, temp_model),
+    MAE       = mae(temp_gage, temp_model),
+    n_days    = n(),
+    .groups   = "drop"
+  )
+
+print(gage_summary)
+
+# Overall
+overall_summary <- gage_summary %>%
+  summarize(
+    avg_bias = mean(mean_bias, na.rm = TRUE),
+    avg_RMSE = mean(RMSE,        na.rm = TRUE),
+    avg_MAE  = mean(MAE,         na.rm = TRUE)
+  )
+
+print(overall_summary)
+
+# 5. Plot for one example gauge:
+demo_id <- '09085000'
+
+comparison %>%
+  filter(station_key == demo_id) %>%
+  gather(source, temp, temp_gage, temp_model) %>%
+  ggplot(aes(date, temp, color = source)) +
+    geom_line() +
+    theme_bw() +
+    labs(
+      title = paste("Gauge vs Model for", demo_id),
+      x     = "Date",
+      y     = "Temperature (°C)"
+    )
+
+
+
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(zoo)
+
+# 1. Build your daily gauge series and complete dates
+df_complete_gage <- gage_dataSR %>%
+  mutate(
+    station_key = id,
+    date        = as.Date(date)
+  ) %>%
+  group_by(station_key, date) %>%
+  summarize(temp.mod = mean(temperature, na.rm = TRUE), .groups = "drop") %>%
+  group_by(station_key) %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  ungroup()
+
+# 2. “Blank” temp.mod but keep a copy in temp_orig
+df_blank <- df_complete_gage %>%
+  mutate(
+    temp_orig = temp.mod,
+    temp.mod  = NA_real_
+  )
+
+# 3. Interpolate using the ORIGINAL values (temp_orig) as anchors
+df_interp_all_na <- df_blank %>%
+  group_by(station_key) %>%
+  arrange(date) %>%
+  mutate(
+    temp.mod = na.approx(
+      temp_orig,               # interpolate the original vector
+      x         = as.numeric(date),
+      na.rm     = FALSE,
+      rule      = 2
+    )
+  ) %>%
+  ungroup() %>%
+  select(-temp_orig)
+
+# 4. Compare
+df_compare <- df_interp_all_na %>%
+  rename(temp_filled = temp.mod) %>%
+  left_join(
+    df_complete_gage %>% 
+      rename(temp_true = temp.mod),
+    by = c("station_key","date")
+  )
+
+glimpse(df_compare)
+
+```
+#plot for gage interpolation where values became na then interpolation happens
+```{r}
+
+
+# Collapse to one raw daily value per gauge
+df_daily <- gage_dataSR %>%
+  mutate(
+    station_key = id,
+    date        = as.Date(date)
+  ) %>%
+  group_by(station_key, date) %>%
+  summarize(
+    temp_true = mean(temperature, na.rm = TRUE),
+    .groups   = "drop"
+  )
+
+# Complete the calendar (introduce explicit NAs)
+df_complete <- df_daily %>%
+  group_by(station_key) %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  ungroup()
+
+# Linear‐interpolate only the gaps, preserving originals
+df_interp_gage <- df_complete %>%
+  group_by(station_key) %>%
+  arrange(date) %>%
+  mutate(
+    temp_orig   = temp_true,                              # save the raw
+    temp.mod    = na.approx(                              # interp the raw vector
+                    temp_true,
+                    x      = as.numeric(date),
+                    na.rm  = FALSE,
+                    rule   = 2
+                 ),
+    temp.mod    = if_else(!is.na(temp_orig),             # keep raw where it exists
+                          temp_orig,
+                          temp.mod)
+  ) %>%
+  ungroup() %>%
+  select(station_key, date, temp_true, temp_interp = temp.mod)
+
+# Choose one gauge to examine
+demo_gage <- "09085000"
+raw  <- df_daily  %>% filter(station_key == demo_gage)
+interp <- df_interp_gage %>% filter(station_key == demo_gage)
+
+# Plot: blue line = full interpolated, red points = raw observations
+ggplot() +
+  geom_line(data = interp,
+            aes(x = date, y = temp_interp),
+            color = "steelblue", size = 0.7) +
+  geom_point(data = raw,
+             aes(x = date, y = temp_true),
+             color = "firebrick", size = 1.2, alpha = 0.8) +
+  theme_bw() +
+  labs(
+    x     = "Date",
+    y     = "Temperature (°C)",
+    title = paste("Gauge", demo_gage, "— Raw vs. Interpolated"),
+    subtitle = "Blue = gap‐filled daily series; Red dots = true observations"
+  )
+library(Metrics)
+
+# Use df_compare (raw vs interpolated on days you actually observed)
+#    It should have: station_key, date, temp_true, temp_interp
+glimpse(df_compare)
+
+# Compute per-gauge error metrics
+error_metrics <- df_compare %>%
+  group_by(station_key) %>%
+  summarize(
+    RMSE = rmse(temp_true, temp_interp),
+    MAE  = mae(temp_true, temp_interp),
+    .groups = "drop"
+  )
+
+print(error_metrics)
+
+# Overall stats
+overall <- error_metrics %>%
+  summarize(
+    avg_RMSE = mean(RMSE, na.rm = TRUE),
+    avg_MAE  = mean(MAE,  na.rm = TRUE)
+  )
+
+print(overall)
+
+# Optionally append to your summary table for the ‘Interpolated’ series row:
+summary_stats <- summary_stats %>%
+  mutate(
+    RMSE = if_else(Series == "Interpolated", overall$avg_RMSE, NA_real_),
+    MAE  = if_else(Series == "Interpolated", overall$avg_MAE,  NA_real_)
+  )
+
+print(summary_stats)
+
+
+
+
+
+
+
+```
+#gage interpolation making every value na then interpolating based off original values, this one works
+```{r}
+
+
+df_complete <- gage_dataSR %>%
+  mutate(
+    station_key = id,
+    date        = as.Date(date)
+  ) %>%
+  group_by(station_key, date) %>%
+  summarize(
+    temp.mod = mean(temperature, na.rm = TRUE),  # <-- temp.mod comes back
+    .groups   = "drop"
+  ) %>%
+  group_by(station_key) %>%
+  complete(
+    date = seq(min(date), max(date), by = "day")
+  ) %>%
+  ungroup()
+# Select a 10% hold-out set to act as our test data
+set.seed(42) # for reproducible results
+validation_set <- df_complete %>%
+  filter(!is.na(temp.mod)) %>%         # Only pick from days we have data for
+  group_by(station_key) %>%
+  slice_sample(prop = 0.10) %>%      # Randomly sample 10% of rows from each gage
+  ungroup() %>%
+  select(station_key, date, temp_true = temp.mod) # Keep the true values
+
+# Mask the hold-out values in the main dataframe
+df_masked <- df_complete %>%
+  # If a row is in our validation_set, make its temp NA; otherwise, keep it
+  mutate(temp_for_interp = if_else(
+    date %in% validation_set$date[validation_set$station_key == station_key],
+    NA_real_,
+    temp.mod
+  ))
+
+# Perform the interpolation on the masked data
+df_interpolated <- df_masked %>%
+  group_by(station_key) %>%
+  arrange(date) %>%
+  mutate(
+    temp_pred = na.approx(temp_for_interp, na.rm = FALSE, rule = 2)
+  ) %>%
+  ungroup()
+
+# Join the interpolated values back to the true values for comparison
+final_comparison <- validation_set %>%
+  # Grab the newly predicted values for our test locations
+  left_join(
+    df_interpolated %>% select(station_key, date, temp_pred),
+    by = c("station_key", "date")
+  ) %>%
+  # Clean up any rows where interpolation wasn't possible 
+  filter(!is.na(temp_pred))
+
+print(
+  paste0(
+    "Overall RMSE: ",
+    round(rmse(final_comparison$temp_true, final_comparison$temp_pred), 2),
+    " °C"
+  )
+)
+
+ggplot(final_comparison, aes(x = temp_true, y = temp_pred)) +
+  geom_abline(linetype = "dashed", color = "red", linewidth = 1) +
+  geom_point(alpha = 0.7) +
+  theme_bw() +
+  labs(
+    title = "Interpolated vs. Observed Gage Temperatures",
+    subtitle = "Comparing interpolated values to true, raw observations",
+    x = "Observed, Raw Temperature (°C)",
+    y = "Interpolated Temperature (°C)"
+  ) +
+  coord_fixed() 
+# Create a summary statistics table
+final_comparison <- final_comparison %>%
+  mutate(error = temp_pred - temp_true)
+
+# Create a summary table for each individual gage
+summary_stats_by_gage <- final_comparison %>%
+  group_by(station_key) %>%
+  summarize(
+    n_obs       = n(),
+    mean_bias   = mean(error),
+    mae         = mae(temp_true, temp_pred),
+    rmse        = rmse(temp_true, temp_pred),
+    r_squared   = cor(temp_true, temp_pred)^2,
+    .groups     = "drop"
+  )
+
+# Create an overall summary table by averaging the per-gage stats
+overall_summary <- summary_stats_by_gage %>%
+  summarize(
+    avg_mae       = mean(mae),
+    avg_rmse      = mean(rmse),
+    avg_r_squared = mean(r_squared)
+  )
+
+# Print the summary tables
+print("--- Summary Statistics by Gage ---")
+print(summary_stats_by_gage)
+
+print("--- Overall Model Performance ---")
+print(overall_summary)
+
+```
+```{r}
+df_complete <- gage_dataSR %>%
+  mutate(
+    station_key = id,
+    date        = as.Date(date)
+  ) %>%
+  group_by(station_key, date) %>%
+  summarize(temp.mod = mean(temperature, na.rm = TRUE), .groups = "drop") %>%
+  group_by(station_key) %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  ungroup()
+
+set.seed(42)
+validation_set <- df_complete %>%
+  filter(!is.na(temp.mod)) %>%
+  group_by(station_key) %>%
+  slice_sample(prop = 0.10) %>%
+  ungroup() %>%
+  select(station_key, date, temp_true = temp.mod)
+
+df_interpolated <- df_complete %>%
+  mutate(
+    temp_for_interp = if_else(
+      station_key %in% validation_set$station_key &
+      date %in% validation_set$date[validation_set$station_key == station_key],
+      NA_real_, temp.mod
+    )
+  ) %>%
+  group_by(station_key) %>%
+  arrange(date) %>%
+  mutate(temp_pred = na.approx(temp_for_interp, x = as.numeric(date), na.rm = FALSE, rule = 2)) %>%
+  ungroup()
+
+final_comparison <- validation_set %>%
+  left_join(df_interpolated %>% select(station_key, date, temp_pred),
+            by = c("station_key","date")) %>%
+  filter(!is.na(temp_pred)) %>%
+  mutate(error = temp_pred - temp_true)
+
+# Prepare gage and grid locations
+
+# Grid locations from your TempEST2 output
+grid_pts <- df_interp %>%
+  distinct(grid_key = station_key, lat.x, lon.x)
+
+# Gage locations via USGS metadata
+gage_ids  <- unique(gage_dataSR$id)
+gage_meta <- readNWISsite(gage_ids) %>%
+  select(station_key = site_no,
+         lat.gage     = dec_lat_va,
+         lon.gage     = dec_long_va)
+
+#  Map each gage to its nearest grid point
+
+gauge_to_grid <- gage_meta %>%
+  rowwise() %>%
+  mutate(
+    grid_key = grid_pts$grid_key[
+      which.min(distHaversine(
+        c(lon.gage, lat.gage),
+        cbind(grid_pts$lon.x, grid_pts$lat.x)
+      ))
+    ]
+  ) %>%
+  ungroup() %>%
+  select(station_key, grid_key)
+
+# Combine gage‐interpolated & TempEST2 for direct comparison
+
+comparison <- df_interpolated %>%
+  rename(temp_gage = temp_pred) %>%
+  left_join(gauge_to_grid, by = "station_key") %>%
+  inner_join(
+    df_interp %>%
+      rename(grid_key   = station_key,
+             temp_model = temp.mod),
+    by = c("grid_key","date")
+  ) %>%
+  filter(!is.na(temp_gage), !is.na(temp_model)) %>%
+  mutate(error_gm = temp_model - temp_gage)
+
+#  Compute and print error metrics
+
+overall_rmse <- rmse(comparison$temp_gage, comparison$temp_model)
+overall_mae  <- mae (comparison$temp_gage, comparison$temp_model)
+
+per_gage_metrics <- comparison %>%
+  group_by(station_key) %>%
+  summarize(
+    n       = n(),
+    RMSE    = rmse(temp_gage, temp_model),
+    MAE     = mae (temp_gage, temp_model),
+    bias    = mean(temp_model - temp_gage),
+    .groups = "drop"
+  )
+
+cat("Overall Gage vs TempEST2 RMSE:", round(overall_rmse,2), "°C\n")
+cat("Overall Gage vs TempEST2 MAE :", round(overall_mae,2),  "°C\n")
+print(per_gage_metrics)
+
+# Plot gage vs. TempEST2 for each station
+
+ggplot(comparison, aes(x = temp_gage, y = temp_model)) +
+  geom_abline(lty = "dashed", color = "gray50") +
+  geom_point(alpha = 0.5) +
+  facet_wrap(~ station_key, scales = "free", ncol = 2) +
+  theme_bw() +
+  labs(
+    x        = "Gage‐Interpolated Temp (°C)",
+    y        = "TempEST2 Model Temp (°C)",
+    title    = "Gage vs. TempEST2 Interpolation Comparison",
+    subtitle = sprintf("Overall RMSE = %.2f °C, MAE = %.2f °C",
+                       overall_rmse, overall_mae)
+  )
+
+
+```
+```{r}
+library(ggplot2)
+
+ggplot(comparison, aes(x = temp_gage, y = temp_model)) +
+  # add a clean 1:1 line
+  geom_abline(intercept = 0, slope = 1, color = "#333333", size = 1, linetype = "solid") +
+  # show point density with semi‐transparent points
+  geom_point(alpha = 0.3, shape = 16) +
+  # overlay a LOESS smoother to show systematic bias
+  stat_smooth(method = "loess", color = "#D55E00", size = 1, se = FALSE) +
+  # facet per station
+  facet_wrap(~ station_key, scales = "free", ncol = 2) +
+  theme_bw(base_size = 14) +
+  theme(
+    strip.background = element_rect(fill = "#F0F0F0", color = NA),
+    panel.grid.minor  = element_blank()
+  ) +
+  labs(
+    x        = "Gage-Interpolated Temp (°C)",
+    y        = "TempEST2 Model Temp (°C)",
+    title    = "Gage vs. TempEST2: Predicted vs. Observed",
+    subtitle = sprintf(
+      "Overall RMSE = %.2f °C, MAE = %.2f °C",
+      overall_rmse, overall_mae
+    ),
+    caption  = "Gray line = perfect agreement; orange curve = LOESS fit"
+  )
+
+```
+
+#single day validation for TempEst2 interpolation
+```{r}
+
+# Choose the date you want to test
+selected_date <- as.Date("2022-07-31 ")
+
+df_keyed <- merged_data_weatherSR %>%
+  filter(!is.na(lat.x), !is.na(lon.x), !is.na(date)) %>%
+  mutate(station_key = paste0(round(lat.x,4), "_", round(lon.x,4)))
+
+station_coords <- df_keyed %>%
+  group_by(station_key) %>%
+  summarize(lat.x = mean(lat.x), lon.x = mean(lon.x), .groups="drop")
+
+df_daily <- df_keyed %>%
+  group_by(station_key, date) %>%
+  summarize(temp.mod = mean(temp.mod, na.rm=TRUE), .groups="drop")
+
+df_complete <- df_daily %>%
+  group_by(station_key) %>%
+  complete(date = seq(min(date), max(date), by="day")) %>%
+  ungroup()
+
+df_masked <- df_complete %>%
+  mutate(
+    temp_for_interp = if_else(date == selected_date, NA_real_, temp.mod)
+  )
+
+df_interp_masked <- df_masked %>%
+  group_by(station_key) %>%
+  arrange(date) %>%
+  mutate(
+    temp_pred = na.approx(
+      temp_for_interp,
+      x    = as.numeric(date),
+      na.rm = FALSE,
+      rule  = 2
+    )
+  ) %>%
+  ungroup() %>%
+  # bring back coords if desired
+  left_join(station_coords, by="station_key")
+
+df_true <- merged_data_weatherSR %>%
+  filter(date == selected_date, !is.na(temp.mod)) %>%
+  mutate(station_key = paste0(round(lat.x,4), "_", round(lon.x,4))) %>%
+  select(station_key, date, temp_true = temp.mod)
+
+df_compare <- df_interp_masked %>%
+  filter(date == selected_date) %>%
+  inner_join(df_true, by=c("station_key","date")) %>%
+  filter(!is.na(temp_true), !is.na(temp_pred))
+
+if(nrow(df_compare)==0) stop("No stations to compare on ", selected_date)
+rmse_val <- rmse(df_compare$temp_true, df_compare$temp_pred)
+mae_val  <- mean(abs(df_compare$temp_true - df_compare$temp_pred))
+
+cat("Interpolation RMSE on", selected_date, ":", round(rmse_val,3), "°C\n",
+    "Interpolation MAE  on", selected_date, ":", round(mae_val,3), "°C\n")
+
+```
+# validating the interpolation
+```{r}
+set.seed(42)
+
+# prepare the data
+df_keyed <- merged_data_weatherSR %>%
+  filter(!is.na(lat.x), !is.na(lon.x), !is.na(date)) %>%
+  mutate(station_key = paste0(round(lat.x,4), "_", round(lon.x,4)))
+
+station_coords <- df_keyed %>%
+  group_by(station_key) %>%
+  summarize(lat.x = mean(lat.x), lon.x = mean(lon.x), .groups="drop")
+
+df_daily <- df_keyed %>%
+  group_by(station_key, date) %>%
+  summarize(temp.mod = mean(temp.mod, na.rm=TRUE), .groups="drop")
+
+df_complete <- df_daily %>%
+  group_by(station_key) %>%
+  complete(date = seq(min(date), max(date), by="day")) %>%
+  ungroup()
+
+# 2. Identify all (station_key, month) combos
+month_list <- df_daily %>%
+  filter(!is.na(temp.mod)) %>%
+  mutate(month = floor_date(date, "month")) %>%
+  distinct(station_key, month)
+
+# 3. Sample up to 3 months per station
+cv_months <- month_list %>%
+  group_by(station_key) %>%
+  reframe(
+    month = sample(month, size = min(3, n()), replace = FALSE)
+  ) %>%
+  ungroup()
+
+
+# 4. returns metrics and identifiers
+evaluate_month <- function(st_key, mnth) {
+  df_masked <- df_complete %>%
+    filter(station_key == st_key) %>%
+    mutate(
+      temp_for_interp = if_else(floor_date(date, "month") == mnth,
+                                NA_real_, temp.mod)
+    )
+  df_pred <- df_masked %>%
+    arrange(date) %>%
+    mutate(
+      temp_pred = na.approx(temp_for_interp,
+                            x    = as.numeric(date),
+                            na.rm = FALSE,
+                            rule  = 2)
+    )
+  df_true <- df_daily %>%
+    filter(station_key == st_key,
+           floor_date(date, "month") == mnth) %>%
+    select(date, temp_true = temp.mod)
+  df_comp <- inner_join(df_pred, df_true, by = "date")
+  tibble(
+    station_key = st_key,
+    month        = mnth,
+    rmse         = rmse(df_comp$temp_true, df_comp$temp_pred),
+    mae          = mean(abs(df_comp$temp_true - df_comp$temp_pred), na.rm = TRUE),
+    n_days       = nrow(df_comp)
+  )
+}
+
+# 5. Loop with purrr::pmap_dfr
+cv_results <- purrr::pmap_dfr(
+  list(cv_months$station_key, cv_months$month),
+  evaluate_month
+)
+
+# 6. summarize
+cv_results <- cv_results %>%
+  left_join(station_coords, by = "station_key")
+
+summary_stats <- cv_results %>%
+  summarize(
+    mean_RMSE = mean(rmse, na.rm=TRUE),
+    sd_RMSE   = sd(rmse,   na.rm=TRUE),
+    mean_MAE  = mean(mae,  na.rm=TRUE),
+    sd_MAE    = sd(mae,    na.rm=TRUE)
+  )
+
+print(cv_results)     # per‐station/month metrics
+print(summary_stats)  # overall performance
+
+
+
+```
+#validating the interpolation with usgs gages
+```{r}
+gage_ids <- gage_dataSR %>% distinct(id) %>% pull(id)
+
+#get site metadata (also lat/lon)
+site_meta <- readNWISsite(gage_ids) %>%
+  select(id = site_no, lat_gage = dec_lat_va, lon_gage = dec_long_va)
+
+# merge coordinates into your gage table
+gage_with_coords <- gage_dataSR %>%
+  mutate(date = as.Date(date)) %>%
+  left_join(site_meta, by = "id")
+
+# select the date
+selected_date <- as.Date("2022-07-10")
+
+interp_day <- df_full_interp %>%
+  filter(date == selected_date) %>%
+  select(station_key, temp_pred, lat.x, lon.x)
+
+# for each gage reading on that date, find the nearest grid point
+gage_matched <- gage_with_coords %>%
+  filter(date == selected_date, !is.na(temperature)) %>%
+  rowwise() %>%
+  mutate(
+    nearest_station = interp_day$station_key[
+      which.min(distHaversine(
+        c(lon_gage, lat_gage),
+        cbind(interp_day$lon.x, interp_day$lat.x)
+      ))
+    ],
+    temp_pred = interp_day$temp_pred[which(interp_day$station_key == nearest_station)]
+  ) %>%
+  ungroup()
+
+# compare observed vs. interpolated
+rmse_val <- rmse(gage_matched$temperature, gage_matched$temp_pred)
+mae_val  <- mae(gage_matched$temperature, gage_matched$temp_pred)
+
+cat("Gauge vs. Interp RMSE:", round(rmse_val, 3), "°C\n",
+    "Gauge vs. Interp MAE :", round(mae_val, 3), "°C\n")
+
+#scatter plot
+ggplot(gage_matched, aes(x = temperature, y = temp_pred)) +
+  geom_abline(lty = 2) +
+  geom_point(alpha = 0.7) +
+  theme_bw() +
+  labs(
+    x = "USGS Gage Temp (°C)",
+    y = "Interpolated Temp (°C)",
+    title = paste("Gage vs. Interp on", selected_date)
+  )
+```
+
+#20 years of data plot
+```{r}
+
+#  Define the station_key or gage id for river
+sturgeon_key <- "09081000"  
+
+sturgeon_gage <- readNWISsite("09081000") %>%
+  select(
+    id       = site_no,
+    lat_gage = dec_lat_va,
+    lon_gage = dec_long_va
+  )
+
+grid_pts <- df_full_interp %>%
+  distinct(station_key, lat.x, lon.x)
+sturgeon_key <- grid_pts$station_key[
+  which.min(distHaversine(
+    c(sturgeon_gage$lon_gage, sturgeon_gage$lat_gage),
+    cbind(grid_pts$lon.x,   grid_pts$lat.x)
+  ))
+]
+
+# Create a 20-year window 
+start_year <- 2003
+end_year   <- 2022  
+
+#Pull full daily interpolated temps for Sturgeon River
+sturgeon_full <- df_full_interp %>%
+  filter(station_key == sturgeon_key,
+         year(date) >= start_year,
+         year(date) <= end_year)
+
+#Select only the odd days of interest (day of month 7, 11, or 26)
+sturgeon_odd <- sturgeon_full %>%
+  filter(day(date) %in% c(7, 11, 26)) %>%
+  mutate(
+    dom = day(date),    # day of month
+    yr  = year(date)
+  ) %>%
+  select(station_key, date, yr, dom, temp_pred)
+
+#Plot 20-year time series for each odd day
+ggplot(sturgeon_odd, aes(x = yr, y = temp_pred, group = 1)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ dom, scales = "free_y",
+             labeller = labeller(dom = c(`7` = "7th", `11` = "11th", `26` = "26th"))) +
+  theme_bw() +
+  labs(
+    x = "Year",
+    y = "Interpolated Temp (°C)",
+    title = "Roaring Fork River: Temperature on 7th, 11th, and 26th of Each Month (2003–2022)",
+    subtitle = "One point per year per day‑of‑month"
+  )
+
+#Create a summary table: min, mean, max across years for each odd day
+sturgeon_summary <- sturgeon_odd %>%
+  group_by(dom) %>%
+  summarize(
+    n_years   = n_distinct(yr),   
+    min_temp  = min(temp_pred),
+    mean_temp = mean(temp_pred),
+    max_temp  = max(temp_pred),
+    sd_temp   = sd(temp_pred)
+  )
+
+print(sturgeon_summary)
+
+```
+#quantile plot for single river(gage vs interpolation)
+```{r}
+
+gage_key <- "09081000" 
+#Use only one gage from river
+sturgeon_gage <- readNWISsite("09081000") %>%
+  select(lat_gage = dec_lat_va, lon_gage = dec_long_va)
+grid_pts <- df_full_interp %>% distinct(station_key, lat.x, lon.x)
+sturgeon_key <- grid_pts$station_key[
+  which.min(distHaversine(
+    c(sturgeon_gage$lon_gage, sturgeon_gage$lat_gage),
+    cbind(grid_pts$lon.x, grid_pts$lat.x)
+  ))
+]
+
+# Build daily residuals
+compare_daily <- df_full_interp %>%
+  filter(station_key == sturgeon_key) %>%
+  select(date, temp_pred_interp = temp.mod) %>%   # pull & rename your interpolated series
+  inner_join(
+    merged_data_weatherSR %>%
+      select(date, temp_true = temp.mod) %>%     # pull the true TempEST2 values
+      filter(!is.na(temp_true)),
+    by = "date"
+  ) %>%
+  mutate(
+    doy   = yday(date),
+    resid = temp_pred_interp - temp_true
+  )
+
+# Summarize residual quantiles by day‐of‐year
+resid_summary <- compare_daily %>%
+  group_by(doy) %>%
+  summarize(
+    q10   = quantile(resid, 0.10, na.rm=TRUE),
+    q25   = quantile(resid, 0.25, na.rm=TRUE),
+    med   = median(resid,        na.rm=TRUE),
+    q75   = quantile(resid, 0.75, na.rm=TRUE),
+    q90   = quantile(resid, 0.90, na.rm=TRUE),
+    .groups = "drop"
+  )
+
+# Plot bias ribbon
+ggplot(resid_summary, aes(x = doy)) +
+  geom_ribbon(aes(ymin = q10, ymax = q90), fill = "gray80", alpha = 0.5) +
+  geom_ribbon(aes(ymin = q25, ymax = q75), fill = "gray60", alpha = 0.7) +
+  geom_line(aes(y = med), color = "firebrick", size = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_x_continuous(breaks = c(1, 91, 182, 274, 365),
+                     labels = c("Jan","Apr","Jul","Oct","Dec")) +
+  theme_bw() +
+  labs(
+    x     = "Day of Year",
+    y     = "Interpolation Bias (°C)",
+    title    = paste0("Roaring Fork River (Gage ", gage_key, "): Seasonal Bias of Linear Interpolation"),
+    subtitle = "Median residual (solid) with 25–75% (dark) and 10–90% (light) bands"
+  )
+overall_bias <- resid_summary %>%
+  summarize(
+    mean_med     = mean(med),
+    sd_med       = sd(med),
+    mean_abs_med = mean(abs(med))
+  )
+
+# Proportion of the year we over‐predict vs under‐predict
+prop_sign <- resid_summary %>%
+  summarize(
+    prop_warm = mean(med > 0),   # fraction of days where resid > 0 (too warm)
+    prop_cool = mean(med < 0)    # fraction where resid < 0 (too cool)
+  )
+
+# Seasonal breakdown by quarter
+seasonal_bias <- resid_summary %>%
+  mutate(
+    quarter = case_when(
+      doy <=  90 ~ "Winter (Q1)",
+      doy <= 181 ~ "Spring (Q2)",
+      doy <= 273 ~ "Summer (Q3)",
+      TRUE       ~ "Fall   (Q4)"
+    )
+  ) %>%
+  group_by(quarter) %>%
+  summarize(
+    mean_med     = mean(med),
+    sd_med       = sd(med),
+    mean_abs_med = mean(abs(med)),
+    .groups = "drop"
+  )
+
+#print metrics
+overall_bias
+prop_sign
+seasonal_bias
+range(compare_daily$date)
+
+```
+#function to get the gage ids from the data frame
+```{r}
+# function to extract unique IDs
+get_gage_ids <- function(df) {
+  if(!"id" %in% names(df)) stop("No `id` column in this data frame")
+  unique(df$id)
+}
+
+# Apply it to each of your four gage tables
+ids_rf  <- get_gage_ids(gage_dataSR)  # Roaring Fork
+ids_dr  <- get_gage_ids(gage_data2)   # Delaware
+ids_sr  <- get_gage_ids(gage_data3)   # Sturgeon
+ids_pr  <- get_gage_ids(gage_data4)   # Potomac
+
+# Combine into a named list 
+all_ids <- list(
+  RoaringFork = ids_rf,
+  Delaware    = ids_dr,
+  Sturgeon    = ids_sr,
+  Potomac     = ids_pr
+)
+
+print(all_ids)
+
+```
+#tempest2 quantile plot(no interpolation)
+```{r}
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(ggplot2)
+
+# 1. Define the four station_keys you care about
+my_keys <- c(
+  "47.0322_-88.4918",  
+  "40.5648_-75.1734",  
+  "39.0941_-106.6550", 
+  "39.5207_-78.5689"
+)
+
+
+# Compute quantiles by river × day‐of‐year
+quantiles_by_river <- df_keyed_all %>%
+  filter(station_key %in% my_keys) %>%        # keep only our four rivers
+  mutate(doy = yday(date)) %>%                # compute Day‑of‑Year
+  group_by(station_key, doy) %>%              
+  summarize(
+    q10 = quantile(temp.mod, 0.10, na.rm = TRUE),
+    q50 = quantile(temp.mod, 0.50, na.rm = TRUE),
+    q90 = quantile(temp.mod, 0.90, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Draw the plot
+ggplot(quantiles_by_river, aes(x = doy, color = station_key, fill = station_key)) +
+  # 10–90% ribbon
+  geom_ribbon(aes(ymin = q10, ymax = q90), alpha = 0.2, color = NA) +
+  # median line
+  geom_line(aes(y = q50), size = 0.8) +
+  # formatting
+  scale_x_continuous(breaks = c(1,91,182,274,365),
+                     labels = c("Jan","Apr","Jul","Oct","Dec")) +
+  theme_bw() +
+  labs(
+    x     = "Day of Year",
+    y     = "TempEST2 Model Prediction (°C)",
+    color = "River (station_key)",
+    fill  = "River (station_key)",
+    title = "Seasonal Quantiles of TempEST2 Model Outputs",
+    subtitle = "Median (line) with 10–90% range (ribbon) for four rivers"
+  )
+# gage list
+gage_list <- list(
+  RoaringFork = gage_dataSR,
+  Delaware    = gage_data2,
+  Sturgeon    = gage_data3,
+  Potomac     = gage_data4
+)
+
+# One function to process each river
+process_gage <- function(df, river_name) {
+  # Parse date
+  df <- df %>% mutate(date = as.Date(date))
+
+  # Unique gauge IDs & fetch coords
+  ids <- unique(df$id)
+  meta <- readNWISsite(ids) %>% 
+    select(id = site_no, lat_gage = dec_lat_va, lon_gage = dec_long_va)
+
+  df <- df %>% left_join(meta, by = "id")
+
+  # Build grid of model points
+  grid_pts <- df_keyed_all %>% distinct(station_key, lat.x, lon.x)
+
+  # Map each gauge ID to its nearest station_key
+  gauge_keys <- df %>%
+    distinct(id, lat_gage, lon_gage) %>%
+    rowwise() %>%
+    mutate(
+      station_key = grid_pts$station_key[
+        which.min(distHaversine(
+          c(lon_gage, lat_gage),
+          cbind(grid_pts$lon.x, grid_pts$lat.x)
+        ))
+      ]
+    ) %>%
+    ungroup()
+
+  # Pull model predictions by joining on station_key & date
+  df_pred <- gauge_keys %>%
+    select(id, station_key) %>%
+    left_join(
+      df_keyed_all %>% select(station_key, date, temp_pred = temp.mod),
+      by = "station_key"
+    )
+
+  # Now join with the true gauge readings on id & date
+  df_comp <- df %>%
+    inner_join(df_pred, by = c("id", "date")) %>%
+    filter(!is.na(temperature), !is.na(temp_pred))
+
+  # Compute error metrics
+  df_comp %>%
+    group_by(river = river_name, id) %>%
+    summarize(
+      RMSE = rmse(temperature, temp_pred),
+      MAE  = mae (temperature, temp_pred),
+      .groups = "drop"
+    )
+}
+
+# Apply to all rivers
+gage_metrics <- imap_dfr(gage_list, process_gage)
+
+print(gage_metrics)
+
+
+```
+
+```{r}
+filtered_data <- merged_data %>%
+  filter(date == as.Date("2023-07-31"))
+ggplot(filtered_data, aes(x = lon.x, y = lat.x, color = temp.mod, size = mean_cloud_cover)) +
+  geom_point() +
+  scale_color_viridis_c(option = "magma", name = "Temperature (C)") +
+  scale_size_continuous(range = c(2, 10), name = "Cloud Cover") +
+  theme_minimal() +
+  labs(
+    title = "Temperature vs Cloud Cover on July 2, 2020",
+    x = "Longitude",
+    y = "Latitude",
+    color = "Temperature (°C)",
+    size = "Mean Cloud Cover (%)"
+  )
+```
+```{r}
+filtered_data2 <- merged_data %>%
+  filter(date == as.Date("2023-07-31"))
+ggplot(filtered_data2, aes(x = lon.x, y = lat.x, color = temp.mod, size = mean_cloud_cover)) +
+  geom_point() +
+  scale_color_viridis_c(option = "magma", name = "Temperature (C)") +
+  scale_size_continuous(range = c(2, 10), name = "Cloud Cover") +
+  theme_minimal() +
+  labs(
+    title = "Temperature vs Cloud Cover on July 15, 2020",
+    x = "Longitude",
+    y = "Latitude",
+    color = "Temperature (°C)",
+    size = "Mean Cloud Cover (%)"
+  )
+```
+```{r}
+dates <- as.Date(c("2023-07-28", "2023-07-29", "2023-07-30", "2023-07-31"))
+
+generate_plot <- function(plot_date) {
+  filtered_data <- merged_dataSR%>%
+    filter(date == plot_date)
+  
+  ggplot(filtered_data, aes(x = lon.x, y = lat.x, color = temp.mod, size = mean_cloud_cover)) +
+    geom_point() +
+    scale_color_viridis_c(option = "magma", name = "Temperature (C)") +
+    scale_size_continuous(range = c(2, 10), name = "Cloud Cover") +
+    theme_minimal() +
+    labs(
+      title = paste("Temperature vs Cloud Cover on", plot_date),
+      x = "Longitude",
+      y = "Latitude",
+      color = "Temperature (°C)",
+      size = "Mean Cloud Cover (%)"
+    )
+}
+
+# Generate the four plots
+plot_0702 <- generate_plot(as.Date("2023-07-02"))
+plot_0715 <- generate_plot(as.Date("2023-07-15"))
+plot_0716 <- generate_plot(as.Date("2023-07-16"))
+plot_0717 <- generate_plot(as.Date("2023-07-17"))
+
+combined_plot <- (plot_0702 | plot_0715) / (plot_0716 | plot_0717)
+
+combined_plot
+```
+#single day
+```{r}
+selected_date <- as.Date("2022-07-31")
+daily_data <- pred_filtered %>%
+  filter(date == selected_date)
+
+daily_data_summary <- daily_data %>%
   group_by(id, lon, lat) %>%
   summarize(
-    meanT = mean(temp.mod),
-    range = max(temp.mod) - min(temp.mod)
-  ) %>%
-  ggplot(aes(lon, lat, size=range, color=meanT)) +
+    daily_meanT = mean(temp.mod, na.rm = TRUE),
+    daily_range = max(temp.mod, na.rm = TRUE) - min(temp.mod, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(daily_data_summary, aes(lon, lat, size = daily_range, color = daily_meanT)) +
   geom_point() +
-  scale_size_continuous(range=c(2, 10)) +
+  scale_size_continuous(range = c(2, 10)) +
   scale_color_viridis_c(option = "magma") +
   theme_bw() +
   labs(
     x = "Longitude",
     y = "Latitude",
-    color = "Mean Temperature (C)",
+    color = "Mean Daily Temperature (C)",
     size = "Temperature Range (C)",
-    title = "Colorado Prediction Points"
+    title = paste("Daily Temperature on", format(selected_date, "%Y-%m-%d"))
   )
 ```
+
+```{r message=FALSE}
+pred_filtered <- predSR %>%
+  group_by(id) %>%
+  filter(!all(is.na(temp.mod))) %>%
+  ungroup()
+daily_data <- pred_filtered %>%
+# Change to a specfic month
+  filter(format(date, "%Y-%m") == "2022-07")
+
+# Group by day, longitude, and latitude, then calculate the daily mean temperature and range
+daily_month_data <- daily_data %>%
+  group_by(id, date, lon, lat) %>%
+  summarize(daily_meanT = mean(temp.mod, na.rm = TRUE),
+            daily_range = max(temp.mod, na.rm = TRUE) - min(temp.mod, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(daily_month_data, aes(lon, lat, size = daily_range, color = daily_meanT)) +
+  geom_point() +
+  scale_size_continuous(range = c(2, 10)) +
+  scale_color_viridis_c(option = "magma") +
+  theme_bw() +
+  labs(
+    x = "Longitude",
+    y = "Latitude",
+    color = "Mean Daily Temperature (C)",
+    size = "Temperature Range (C)",
+    title = "Daily Temperature in May 2021 vs Distance Downstream"
+  ) +
+  facet_wrap(~ date, ncol = 4)
+
+
+```
+
+# interpolated TempEst
+```{r}
+selected_date <- as.Date("2022-07-30")
+daily_data_summary_interpolated <- df_interp %>%
+  filter(date == selected_date) %>%
+  group_by(station_key, lat.x, lon.x) %>%
+  summarize(
+    daily_meanT = mean(temp.mod, na.rm = TRUE),
+    daily_range = max(temp.mod, na.rm = TRUE) - min(temp.mod, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(daily_data_summary_interpolated, aes(x = lon.x, y = lat.x,
+                                            size = daily_range,
+                                            color = daily_meanT)) +
+  geom_point(alpha = 0.7) +
+  scale_size_continuous(range = c(2, 10), name = "Temperature Range (C)") +
+  scale_color_viridis_c(
+    option = "magma",
+    name   = "Mean Daily Temp (°C)"
+  ) +
+  coord_quickmap() +
+  theme_bw() +
+  labs(
+    x     = "Longitude",
+    y     = "Latitude",
+    title = paste("Daily Temperature on", format(selected_date, "%Y-%m-%d"))
+  )
+
+
+
+```
+
+```{r}
+dates_to_check <- as.Date(c("2022-07-01", "2022-07-16", "2022-07-21"))  # example
+df_interp %>%
+  filter(date %in% dates_to_check) %>%
+  group_by(date) %>%
+  summarize(
+    minT = min(temp.mod, na.rm = TRUE),
+    maxT = max(temp.mod, na.rm = TRUE),
+    meanT = mean(temp.mod, na.rm = TRUE),
+    rangeT = max(temp.mod, na.rm = TRUE) - min(temp.mod, na.rm = TRUE)
+  ) %>%
+  print(n = Inf)
+daily_multi <- df_interp %>%
+  filter(date %in% dates_to_check) %>%
+  group_by(station_key, lat.x, lon.x, date) %>%
+  summarize(
+    daily_meanT = mean(temp.mod, na.rm = TRUE),
+    daily_range = max(temp.mod, na.rm = TRUE) - min(temp.mod, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(daily_multi, aes(x = lon.x, y = lat.x, size = daily_range, color = daily_meanT)) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~ date) +
+  scale_size_continuous(range = c(2, 10)) +
+    scale_color_viridis_c(
+    option = "magma",
+    limits = c(20, 30),
+    oob = scales::squish,
+    name = "Mean Daily Temp (°C)"
+  ) +
+  coord_quickmap() +
+  theme_bw() +
+  labs(
+    x = "Longitude",
+    y = "Latitude",
+    color = "Mean Daily Temperature (C)",
+    size = "Temperature Range (C)",
+    title = "Daily Temperature Comparison"
+  )
+
+
+```
+```{r}
+```
+monthly_temp_data <- pred_filtered %>% 
+
+mutate(month = format(date, "%Y-%m"), year = format(date, "%Y")) %>% 
+
+group_by(id, month, lon, lat, year) %>% 
+
+summarize(monthly_meanT = mean(temp.mod, na.rm = TRUE), 
+
+monthly_range = max(temp.mod, na.rm = TRUE) - min(temp.mod, na.rm = TRUE)) %>% 
+
+ungroup() 
+
+ 
+
+# Filter for the specific year, e.g., 2022 
+
+monthly_temp_data_2022 <- monthly_temp_data %>% 
+
+ 
+
+filter(year == "2022") 
+
+ 
+
+ggplot(monthly_temp_data_2022, aes(lon, lat, size = monthly_range, color = monthly_meanT)) + 
+
+geom_point() + 
+
+scale_size_continuous(range = c(2, 10)) + 
+
+scale_color_viridis_c(option = "magma") + 
+
+theme_bw() + 
+
+labs( 
+
+x = "Longitude", 
+
+y = "Latitude", 
+
+color = "Mean Monthly Temperature (C)", 
+
+size = "Temperature Range (C)", 
+
+title = "Monthly Temperature in 2022 vs Distance Downstream" 
+
+) + 
+
+facet_wrap(~ month, ncol = 4) 
+``` 
 
 # Training a Model
 
@@ -114,23 +2525,47 @@ if it crashes.
 
 ```{r}
 library(dataRetrieval)
-gage.ids <- c("10343500")  # provide a list of IDs here... this one is Sagehen Creek, CA.
-gage.file <- "GageDataDemo.csv"
+#gage.ids <- c( "01440200","01462000","01434000",
+#"01458500","01457500","01438500") 
+#gage.ids <- c("01463500", "01440200","01462000","01434000",
+#"01458500","01457500","01438500")
+gage.ids <- c("09081000", "09085000", "09073300")
+gage.file <- "RoaringForkGageData.csv"
 start <- "2001-01-01"
 end <- "2023-12-31"
 var.temp <- "00010"
-
-walk(gage.ids,
-     \(gid) {
-       readNWISdv(gid, var.temp, start, end) %>%
-         select(id = site_no,
-                date = Date,
-                temperature = X_00010_00003) %>%
-         mutate(year = as.integer(format(date, "%Y")),
-                day = as.integer(format(date, "%j"))) %>%
-         select(id, date, year, day, temperature) %>%
-         write_csv(gage.file, append = file.exists(gage.file))
-     })
+if (file.exists(gage.file)) {
+  file.remove(gage.file)
+}
+walk(gage.ids, \(gid) {
+  
+  # Fetch the daily data for the gage
+  gage_data <- readNWISdv(gid, var.temp, start, end)
+  
+  # If data exists for the gage, process and save it
+  if (nrow(gage_data) > 0) {
+    
+    # Rename the columns and format the data
+    gage_data_cleaned <- gage_data %>%
+      select(id = site_no, date = Date, temperature = X_00010_00003) %>%
+      mutate(year = as.integer(format(date, "%Y")),
+             day = as.integer(format(date, "%j"))) %>%
+      select(id, date, year, day, temperature)
+    
+    # Write the data to the CSV file (append mode after the first run)
+    if (!file.exists(gage.file)) {
+      # Write with column names the first time
+      write_csv(gage_data_cleaned, gage.file)
+    } else {
+      # Append without column names after the first run
+      write_csv(gage_data_cleaned, gage.file, append = TRUE, col_names = FALSE)
+    }
+    
+  } else {
+    cat("No data found for gage ID:", gid, "\n")
+  }
+  
+})
 ```
 
 ```{r}
@@ -175,19 +2610,43 @@ analysis dataset and variables were retrieved which later turned out to be irrel
 The spatial data has 4.6M observations for 1506 points and 22 years.
 
 ```{r eval=FALSE}
-spat.data <-
-  map_dfr(
-    list.files("FullGEE/", pattern = "AllPoints*", full.names = T),
+gee_data_dir <- "data/GreenRiverData"
+
+# List all files in the directory to see what is available
+files <- list.files(gee_data_dir, full.names = TRUE)
+print(files)
+
+# If there are files in the directory, proceed with reading and processing
+if (length(files) > 0) {
+  # Print the first few lines of a sample file to verify its contents
+  sample_file <- files[1]
+  sample_data <- read_csv(sample_file, col_types = "cDddddddddddddddddddd", n_max = 10)
+  print(colnames(sample_data))  # Check the column names in the sample file
+
+  # Read and combine all GEE data files into a single data frame
+  spat.data <- map_dfr(
+    files,
     ~ read_csv(., col_types = "cDddddddddddddddddddd")
-  ) %>%
-  select(id:elevation,
-         lst = lst_day, humidity,
-         water, shrubland, grassland, barren) %>%
-  mutate(year = as.integer(format(date, "%Y")),
-         day = as.integer(format(date, "%j"))) %>%
-  filter(lst > -273, humidity >= 0) %>%  # remove missing data
-  drop_na()
-write_csv(spat.data, "SpatialData.csv")
+  )
+
+  # Print the combined data frame column names to verify
+  print(colnames(spat.data))
+
+  # Adjust the script according to the actual column names found in the data
+  spat.data <- spat.data %>%
+    select(id, date, lat, lon, elevation, lst, humidity, water, shrubland, grassland, barren) %>%
+    mutate(
+      year = as.integer(format(date, "%Y")),
+      day = as.integer(format(date, "%j"))
+    ) %>%
+    filter(lst > -273, humidity >= 0) %>%  # Remove missing data
+    drop_na()
+
+  # Save the processed spatial data for future use
+  write_csv(spat.data, "SpatialData.csv")
+} else {
+  print("No files found in the directory.")
+}
 ```
 ```{r}
 spat.data <- read_csv("SpatialData.csv",
@@ -239,7 +2698,7 @@ the trend in mean annual temperature with respect to river width (approximated b
 water abundance), all else being equal.
 
 ```{r warning=FALSE, message=FALSE}
-model <- full.schema(rtn.model=TRUE, use.max=TRUE)(data)
+model <- full.schema(rtn.model=TRUE)(data)
 save(model, file="krigs.rda")
 ```
 
@@ -329,11 +2788,11 @@ exmod <- model$Humidity
 # 25 to 50 N, 125 to 65 W
 gList <- list(
   lon = (-125):(-65),
-  lat = 25:55
+  lat = 25:50
 )
 
 # drop.Z: ignore fixed-part covariates
-surf <- predictSurface(exmod, gridList = gList, drop.Z = TRUE, extrap = TRUE)
+surf <- predictSurface(exmod, gridList = gList, drop.Z = TRUE)
 sg <- as_tibble(make.surface.grid(gList)) %>%
   mutate(z = as.vector(surf$z))
 
@@ -359,31 +2818,15 @@ spatsig <- map_dfr(model,
 ```
 
 ```{r}
-namer <- c(
-  "Amplitude" = "(B) Annual Amplitude",
-  "AutumnWinter" = "(C) Autumn/Winter Coefficient",
-  "Humidity" = "Daily Mean Humidity Coefficient",
-  "HumidityMax" = "Daily Max. Humidity Coefficient",
-  "Intercept" = "(A) Mean Temperature",
-  "InterceptMax" = "Daily Max. Intercept",
-  "LST" = "Daily Mean LST Coefficient",
-  "LSTMax" = "Daily Max. LST Coefficient",
-  "SpringSummer" = "Spring/Summer Coefficient",
-  "WinterDay" = "(D) Winter Anomaly Peak Date"
-)
 spatsig %>%
   drop_na() %>%
-  filter(Component %in% c(
-    "WinterDay", "Amplitude", "Intercept", "AutumnWinter"
-  )) %>%
-  mutate(Component = namer[Component]) %>%
   group_by(Component) %>%
   mutate(z = (z - min(z, na.rm=T)) / (max(z, na.rm=T) - min(z, na.rm=T))) %>%
   ggplot(aes(lon, lat, fill=z)) +
   geom_tile() +
   scale_fill_viridis_c() +
   geom_polygon(aes(long, lat, group=group, fill=NA), data=usa, fill=NA, color="black") +
-  facet_wrap(~Component, ncol=2) +
+  facet_wrap(~Component) +
   theme_bw() +
   theme(legend.position = "bottom") +
   labs(
@@ -392,81 +2835,7 @@ spatsig %>%
     fill="Normalized Spatial Component"
   )
 
-ggsave("Figures/SpatialSignal.png", width=6.5, height=5, bg="white")
-```
-
-
-
-#### Export Spatial Signal
-
-We can export the spatial signals as a NetCDF for use in TempEst 2-FAST.  We
-extend it a few degrees up into Canada so it can be used for the Columbia and
-Great Lakes watersheds.
-
-The exporting is broken into chunks because full-CONUS, high-resolution runs use
-enormous RAM.
-
-```{r}
-library(terra)
-load("krigs.rda")
-projstr <- "+proj=longlat +datum=WGS84"
-```
-
-```{r}
-# 1 km resolution = approx. 1/100 degree
-# 6001 x 3001
-# For testing, we can use low resolution, because a higher-res run uses many
-# GB of RAM.
-# Additionally, 1-km resolution takes excessive space, in general. Try 5-km, which should still have
-# little impact.
-abs_min_lat <- 25
-abs_max_lat <- 55
-abs_min_lon <- -125
-abs_max_lon <- -65
-lon_size <- abs_max_lon - abs_min_lon
-lat_size <- abs_max_lat - abs_min_lat
-scale <- 20
-chunks <- 100  # in each direction, so total chunks = N^2
-spr <- NULL
-tictoc::tic()
-for (xc in 1:chunks - 1) {
-  # Determine whether to exclude the rightmost column (avoid overlap).
-  min_lon = abs_min_lon + xc * lon_size / chunks
-  max_lon = abs_min_lon + (xc + 1) * lon_size / chunks - 1/scale  # exclude the right
-  for (yc in 1:chunks - 1) {
-    min_lat = abs_min_lat + yc * lat_size / chunks
-    max_lat = abs_min_lat + (yc + 1) * lat_size / chunks - 1/scale  # exclude the right
-    gList <- list(
-      lon = (min_lon * scale):(max_lon * scale) / scale,
-      lat = (min_lat * scale):(max_lat * scale) / scale
-    )
-    nr <- length(gList$lat)
-    spatraster <- rast(ncol = length(gList$lon),
-                      nrow = nr,
-                      xmin = min_lon,
-                      xmax = max_lon,
-                      ymin = min_lat,
-                      ymax = max_lat,
-                      nlyr = 10,
-                      names = names(model))
-
-    # Fields counts from bottom to top, terra counts from top to bottom
-    for (nm in names(model)) {
-      values(spatraster[[nm]]) <- t(predictSurface(model[[nm]], gridList = gList,
-                                            drop.Z = TRUE, extrap = TRUE)$z)[nr:1,]
-    }
-    if (is.null(spr)) {
-      spr <- spatraster
-    } else {
-      # Build up incrementally
-      spr <- mosaic(spr, spatraster)
-    }
-  }
-  cat("|")
-}
-tictoc::toc()
-writeCDF(spr, "SpatialModels.nc", overwrite = TRUE, split = TRUE)
-plot(spr)
+ggsave("Figures/SpatialSignal.png", width=6.5, height=4, bg="white")
 ```
 
 
@@ -524,3 +2893,49 @@ prediction value, another variable must be counterbalancing it in practice.  For
 example, large impacts across humidities suggest that what is happening is probably
 a difference between humidities.
 
+### Creating a Recurrent Neural Network Model for TempEst2
+```{r}
+library(keras)
+library(tidyverse)
+
+# Normalize the data
+normalized_data <- merged_data_weatherSR %>%
+  select(lst, humidity, temperature) %>%
+  mutate(across(everything(), ~ (. - mean(.)) / sd(.)))
+
+# Create training and test sets
+train_data <- normalized_data %>% filter(date < as.Date("2023-01-01"))
+test_data <- normalized_data %>% filter(date >= as.Date("2023-01-01"))library(keras)
+
+# Define the RNN model
+model <- keras_model_sequential() %>%
+  layer_lstm(units = 50, input_shape = c(10, ncol(train_data) - 1), return_sequences = TRUE) %>%
+  layer_lstm(units = 50, return_sequences = FALSE) %>%
+  layer_dense(units = 1, activation = "linear")
+
+# Compile the model
+model %>% compile(
+  loss = "mean_squared_error",
+  optimizer = optimizer_adam(),
+  metrics = c("mean_absolute_error")
+)create_sequences <- function(data, sequence_length) {
+  X <- array(NA, dim = c(nrow(data) - sequence_length, sequence_length, ncol(data) - 1))
+  y <- array(NA, dim = c(nrow(data) - sequence_length, 1))
+  for (i in 1:(nrow(data) - sequence_length)) {
+    X[i,,] <- as.matrix(data[i:(i + sequence_length - 1), -ncol(data)])
+    y[i] <- data[i + sequence_length, ncol(data)]
+  }
+  list(X = X, y = y)
+}
+
+sequence_length <- 10
+train_sequences <- create_sequences(train_data, sequence_length)
+test_sequences <- create_sequences(test_data, sequence_length)model %>% fit(
+  x = train_sequences$X,
+  y = train_sequences$y,
+  epochs = 50,
+  batch_size = 32,
+  validation_split = 0.2
+)
+predictions <- model %>% predict(test_sequences$X)
+```

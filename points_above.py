@@ -134,4 +134,7 @@ def points_above_all(sites, site_type, N, resolution=1000, id_bases=None):
     return [site_row for
             site_set in all_sites for
             site_row in site_set]
-    
+if __name__ == '__main__':
+    points = points_above_all(['USGS-07374000'],'usgs',100,1000,['Mississippi'])
+    for i in points:
+            print(i)

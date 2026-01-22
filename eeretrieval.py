@@ -17,13 +17,15 @@ import datetime as dt
 # Import a data points list with format:
 # [[[lon, lat], gage ID]], e.g.
 # datapts =  [[[-74.9658333,39.41916667], "01412000"]]
-from datapts import datapts
+from newdatapts import potomacdatapts, sacramento_pts, willamette_pts, mississippi_pts
 
 # Trigger the authentication flow.
 # ee.Authenticate()
-
-# Initialize the library.  It is now necessary to specify a Google Cloud project (this is still free for academic use).
-ee.Initialize(project='YOUR_CLOUD_PROJECT_HERE')
+service_account = 'justin@pajela.com'
+credentials = ee.ServiceAccountCredentials(service_account, '/Users/justin/Downloads/hogue-428318-8f3882796b90.json')
+ee.Initialize(credentials)
+# Initialize the library.
+#ee.Initialize()
 
 """# Temperature Retrieval Setup
 
@@ -232,12 +234,12 @@ def getAllTimeseries(pts, times, basename, folder, prt=False, wait=None,
 times = [(str(x), str(y+1),
           str(dt.date(x, 1, 1) + dt.timedelta(y)),
           str(dt.date(x, 1, 1) + dt.timedelta(y+1)))
-           for x in range(2001, 2024)
+           for x in range(2020, 2024)
            for y in range(365)]
 
 # 20 seconds works for 1300 points.  Scale accordingly.  The goal of the wait
 # is to avoid exceeding 3000 jobs.
 if __name__ == "__main__":
-    getAllTimeseries(datapts,
-        times, "AllData", "AFolder", prt=True, wait=10)
-    # runEcoregions(datapts, "", "Ecoregions")
+     getAllTimeseries(mississippi_pts,
+         times, "AllData", "MississippiData", prt=True, wait=1)
+    #runEcoregions(datapts, "", "Ecoregions")
