@@ -211,7 +211,7 @@ def getAllTimeseries(pts, times, basename, folder, prt=False, wait=None,
     except Exception as err:
         print(err)
         print("Failed %s %s; retrying after delay" % (ts[0], ts[1]))
-        sleep(wait * 10)
+        sleep(wait * 10 if wait is not None else 180)
         try:
             result = mkFc(getAllData(pts, ts[0], ts[1], ts[2], ts[3], retrieve=retrieve))
             ee.batch.Export.table.toDrive(
