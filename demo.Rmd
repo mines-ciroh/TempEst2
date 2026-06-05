@@ -1,7 +1,7 @@
 ---
 title: "TempEst 2 Demo"
 author: "Daniel Philippus"
-date: "`r format(Sys.Date(), format='%b %d, %Y)')`"
+date: "`r format(Sys.Date(), format='%b %d, %Y')`"
 output: pdf_document
 ---
 
@@ -80,7 +80,9 @@ from USGS gages.
 
 Using a hypothetical `indat`, then, just run:
 
-```model <- full.schema()(indat)```
+```
+model <- full.schema()(indat)
+```
 
 Note the empty parentheses; the arguments to `full.schema` are the seasonality
 and anomaly model functions to use (defaults provided), and then it returns
