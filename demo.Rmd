@@ -248,7 +248,7 @@ save(model, file="krigs.rda")
 To build one that supports prediction:
 
 ```{r eval=FALSE}
-model <- full.schema()(data)
+model <- full.schema(use.max=TRUE)(data)
 save(model, file="model.rda")
 ```
 
