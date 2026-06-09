@@ -210,9 +210,9 @@ krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
   # be able to re-evaluate them when we're inspecting components.
   fn <- function(y, ...) {
     if (rtn.model) {
-      spatialProcess(xer(fitted), y, Z = zer(fitted), Distance = "rdist.earth")
+      spatialProcess(xer(fitted), y, XMat = zer(fitted), Distance = "rdist.earth")
     } else {
-      spatialProcess(xer(fitted), y, Z = zer(fitted), Distance = "rdist.earth", ...)
+      spatialProcess(xer(fitted), y, XMat = zer(fitted), Distance = "rdist.earth", ...)
     }
   }
 
@@ -270,11 +270,11 @@ krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
         ungroup()
 
       # Now, predict all of the coefficients.
-      codat$lstco <- predict(coef.lst, xer(codat), Z=zer(codat))[,1]
-      codat$humco <- predict(coef.humidity, xer(codat), Z=zer(codat))[,1]
-      codat$lstpco <- if (use.max) predict(coef.lstp, xer(codat), Z=zer(codat))[,1] else NULL
-      codat$humpco <- if (use.max) predict(coef.humidityp, xer(codat), Z=zer(codat))[,1] else NULL
-      codat$intpco <- if (use.max) predict(coef.intp, xer(codat), Z=zer(codat))[,1] else NULL
+      codat$lstco <- predict(coef.lst, xer(codat), XMat=zer(codat))[,1]
+      codat$humco <- predict(coef.humidity, xer(codat), XMat=zer(codat))[,1]
+      codat$lstpco <- if (use.max) predict(coef.lstp, xer(codat), XMat=zer(codat))[,1] else NULL
+      codat$humpco <- if (use.max) predict(coef.humidityp, xer(codat), XMat=zer(codat))[,1] else NULL
+      codat$intpco <- if (use.max) predict(coef.intp, xer(codat), XMat=zer(codat))[,1] else NULL
 
       # Finally, compute the estimated anomaly.
       smdat <- left_join(smdat, codat, by="id") %>%
@@ -404,9 +404,9 @@ krig.ssn <- function(indat, rtn.model=FALSE, ...) {
   # See explanation on krig.anom for this thing.
   fn <- function(y, z, ...) {
     if (rtn.model) {
-      spatialProcess(xer(train), y, Z = z, Distance = "rdist.earth")
+      spatialProcess(xer(train), y, XMat = z, Distance = "rdist.earth")
     } else {
-      spatialProcess(xer(train), y, Z = z, Distance = "rdist.earth", ...)
+      spatialProcess(xer(train), y, XMat = z, Distance = "rdist.earth", ...)
     }
   }
 
@@ -450,13 +450,13 @@ krig.ssn <- function(indat, rtn.model=FALSE, ...) {
         ppd %>%
           group_by(id) %>%
           group_modify(~{
-            fallwint <- predict(fw, xer(.x), Z=zer.fw(.x))[,1]
+            fallwint <- predict(fw, xer(.x), XMat=zer.fw(.x))[,1]
             sinfit <- tibble(
-              Intercept = predict(kix, xer(.x), Z=zer.itx(.x))[,1],
-              Amplitude = predict(amp, xer(.x), Z=zer.amp(.x))[,1],
+              Intercept = predict(kix, xer(.x), XMat=zer.itx(.x))[,1],
+              Amplitude = predict(amp, xer(.x), XMat=zer.amp(.x))[,1],
               FallWinter = fallwint,
-              SpringSummer = predict(ssu, xer(.x), Z=cbind(zer.ssu(.x), fallwint))[,1],
-              WinterDay = predict(wid, xer(.x), Z=zer.wid(.x))[,1],
+              SpringSummer = predict(ssu, xer(.x), XMat=cbind(zer.ssu(.x), fallwint))[,1],
+              WinterDay = predict(wid, xer(.x), XMat=zer.wid(.x))[,1],
               # These have so much uncertainty that predicting them doesn't improve performance.
               # Just use baseline values.
               SpringDay = 160,
