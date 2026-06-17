@@ -36,11 +36,16 @@ not a logistical barrier, I can run one job per timestep.
 def getBuffered(dataset, band, pt, buffer, start=None, end=None):
   area = ee.Geometry.Point(pt).buffer(buffer)
   data = dataset.filter(ee.Filter.date(start, end)) if start is not None else dataset
+  key = band + "_mean" if start is not None else "mean"
   result = data\
           .select(band)\
           .reduce(ee.Reducer.mean())\
-          .reduceRegion(ee.Reducer.mean(), area, 10)\
-          .getNumber(band + "_mean" if start is not None else "mean")
+          .reduceRegion(ee.Reducer.mean(), area, 10)
+  result = ee.Algorithms.If(
+      result.contains(key),
+      result.getNumber(key),
+      -999
+      )
   return ee.Algorithms.If(
       result,
       result,
@@ -176,6 +181,26 @@ def getAllData(pts, year, time, start, end, inner=500, outer=1500,
       for pt in pts
   ])
 
+def fullTimeseries(pts, times, basename, folder, retrieve=getPtData, cols=cols):
+    # Retrieve full timeseries in a single pass per point. Note that a ~20-year
+    # period of record may exceed the allowable batch size, so try subdividing
+    # the times. 5-10 years seems to work.
+    for pt in pts:
+        desc = pt[1] + basename
+        print(f"Running {desc}")
+        result = mkFc(ee.List([
+            retrieve(pt[0], pt[1], ts[0], ts[1], ts[2], ts[3])
+            for ts in times
+            ]))
+        ee.batch.Export.table.toDrive(
+            collection = result,
+            description = desc,
+            folder = folder,
+            fileFormat = "CSV",
+            selectors = cols
+            ).start()
+
+
 
 def getAllTimeseries(pts, times, basename, folder, prt=False, wait=None,
                      retrieve=getPtData, cols=cols):
@@ -241,3 +266,9 @@ if __name__ == "__main__":
     getAllTimeseries(datapts,
         times, "AllData", "AFolder", prt=True, wait=10)
     # runEcoregions(datapts, "", "Ecoregions")
+    # Point-focused version...
+    # maxN = 3
+    # step = len(times) // maxN
+    # for i in range(maxN):
+    #     ts = times[(step*i):(step*(i+1))] if i < (maxN - 1) else times[(step*i):]
+    #     fullTimeseries(datapts, ts, f"_Part{i}", "Montana")
