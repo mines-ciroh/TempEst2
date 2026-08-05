@@ -46,6 +46,19 @@ sigsmooth <- function(lst, k = 3/10) {
   stats::filter(c(rep(lstsig[1], len), lstsig), filt, sides=1)[(len+1):(len + length(lstsig))]
 }
 
+lstsmooth <- function(lst, k = 3/10) {
+  # Implements smoothing for LST anomaly - that is,
+  # smoothing of recent variation *without* application of the sigmoid scaling.
+  # The smoother (1, 1/2, 1/4, 1/6, 1/8, 1/10, 1/12) performs well for most sites.
+  # lst is the vector of LST anomalies.
+  # k is the sigmoid "range", described in `sigmoider`.
+  # Returns: smoothed and transformed LST anomaly.
+  filt <- 1/c(1, 1:6*2)
+  len <- length(filt)
+  # Pad with first value, then cut the padding off again
+  stats::filter(c(rep(lst[1], len), lst), filt, sides=1)[(len+1):(len + length(lst))]
+}
+
 humsmooth <- function(hum) {
   # Implements the simple smoothing function for recent humidity anomaly.
   # The smoother (1, 1/10) works well for most sites.
@@ -61,8 +74,12 @@ physfit.obj <- function(gd) {
   temp <- gd$temperature
   lst <- gd$lst
   hum <- gd$humidity
+  day <- gd$day
+  drought <- gd$drought
+  coswt <- cos(day * 2 * pi / 365)
+  sinwt <- sin(day * 2 * pi / 365)
   
-  lm(temp ~ 0 + lst + hum)
+  lm(temp ~ 0 + lst + hum + drought + drought:coswt + drought:sinwt)
 }
 
 physfit <- function(gd) {
@@ -74,30 +91,38 @@ physfit <- function(gd) {
   as_tibble_row(obj$coefficients)
 }
 
-physfit.prd <- function(lst, hum, temp) {
+physfit.prd <- function(lst, hum, temp, day, drought) {
   # Compute the temperature anomaly that would be predicted by the sensitivity fit.
   # Sensitivity fit is described in `physfit.obj`.
   # lst: vector of smoothed LST anomaly
   # hum: vector of smoothed humidity anomaly
   # temp: vector of temperature anomaly
   # Returns: vector of predicted temperature anomalies
-  physfit.obj(tibble(lst=lst, humidity=hum, temperature=temp))$fitted.values
+  physfit.obj(tibble(lst=lst, humidity=hum, temperature=temp, day, drought))$fitted.values
 }
 
-physfit.vec <- function(lst, hum, temp) {
+physfit.vec <- function(lst, hum, temp, day, drought) {
   # Same as `physfit`, but renamed.
-  rename(physfit(tibble(lst=lst, humidity=hum, temperature=temp)),
+  rename(physfit(tibble(lst=lst, humidity=hum, temperature=temp, day, drought)),
          Coef.LSTSigmoid = lst,
-         Coef.Humidity = hum)
+         Coef.Humidity = hum,
+         Coef.Drought = drought,
+         Coef.DroughtCos = `drought:coswt`,
+         Coef.DroughtSin = `drought:sinwt`)
 }
 
-physfit.vecplus <- function(lst, hum, temp) {
+physfit.vecplus <- function(lst, hum, temp, day, drought) {
   # Same as `physfit.vec`, but adds an intercept term for daily *max* prediction.
   # Daily mean anomaly has an intercept of 0; daily max does not.
-  as_tibble_row(lm(temp ~ lst + hum)$coefficients) %>%
+  coswt <- cos(day * 2 * pi / 365)
+  sinwt <- sin(day * 2 * pi / 365)
+  as_tibble_row(lm(temp ~ lst + hum + drought + drought:coswt + drought:sinwt)$coefficients) %>%
     rename(InterceptP = `(Intercept)`,
            Coef.LSTSigmoidP = lst,
-           Coef.HumidityP = hum)
+           Coef.HumidityP = hum,
+           Coef.DroughtP = drought,
+           Coef.DroughtCosP = `drought:coswt`,
+           Coef.DroughtSinP = `drought:sinwt`)
 }
 
 full.schema <- function(sche=krig.ssn, ma=krig.anom, rtn.model=FALSE,
@@ -163,6 +188,7 @@ krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
   # water [abundance in 500 m radius],
   # lst [C, tested with daytime MODIS in 500 m radius],
   # humidity [specific humidity, kg/kg]
+  # drought [Evaporative Demand Drought Index in the last 30 days]
   #
   # indat additionally requires temperature [C, daily mean observed] for training
   # and temperature.max if use.max is TRUE
@@ -192,10 +218,11 @@ krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
   fitted <- smoother(indat) %>%
     group_by(id) %>%
     summarize(
-      physfit.vec(lst, humidity, temperature),
-      if(use.max) physfit.vecplus(lst, humidity, temperature.plus),
-      across(c(lon, lat, water, elevation), mean),
-      humidity_sd = sd(humidity)
+      physfit.vec(lst, humidity, temperature, day, drought),
+      if(use.max) physfit.vecplus(lst, humidity, temperature.plus, day, drought),
+      across(c(lon, lat, water, elevation, shrubland, barren, lst), mean),
+      humidity_sd = sd(humidity),
+      humidity = mean(humidity)
     ) %>%
     ungroup() %>%
     drop_na()
@@ -203,12 +230,13 @@ krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
   # Convenience functions to select X and Z inputs for kriging (Z = non-spatial covariates).
   xer <- \(x) as.matrix(select(x, lon, lat))
   zer <- \(x) as.matrix(select(x, elevation, water, humidity_sd))
+  zer.drought <- \(x) select(x, all_of(c("elevation", "water", "shrubland", "humidity", "barren", "lst")))
 
   # This setup allows pre-fitted spatial covariance coefficients (the ...) to be used for prediction,
   # but not for returning model components.  That's because fitting them can be a bit crashy and slow, so
   # we want actually building a model to be reliable (by using pre-fitted ones), but we also want to
   # be able to re-evaluate them when we're inspecting components.
-  fn <- function(y, ...) {
+  fn <- function(y, zer = zer, ...) {
     if (rtn.model) {
       spatialProcess(xer(fitted), y, XMat = zer(fitted), Distance = "rdist.earth")
     } else {
@@ -219,21 +247,40 @@ krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
   # Coefficient predictor fits.  aRange and lambda have been pre-selected by maximum likelihood estimation
   # during model development.  Covariance function type (e.g., Matern, exponential) was also tested,
   # but the `fields` default (Matern, number=1) works well.
-  coef.lst <- fn(fitted$Coef.LSTSigmoid
+  coef.lst <- fn(fitted$Coef.LSTSigmoid, zer
                              , aRange = 23, lambda = 1.1
                  )
-  coef.lstp <- if (use.max) fn(fitted$Coef.LSTSigmoidP
+  coef.lstp <- if (use.max) fn(fitted$Coef.LSTSigmoidP, zer
                   , aRange = 28, lambda = 1.1
   ) else NULL
   
-  coef.humidity <- fn(fitted$Coef.Humidity
+  coef.drought <- fn(fitted$Coef.Drought, zer.drought
+                     , aRange = 13.7, lambda = 0.39
+  )
+  coef.droughtp <- if (use.max) fn(fitted$Coef.DroughtP, zer.drought
+                                   , aRange = 25.5, lambda = 0.72
+  ) else NULL
+  coef.droughtcos <- fn(fitted$Coef.DroughtCos, zer.drought,
+                        aRange = 21.1, lambda = 0.79
+  )
+  coef.droughtcosp <- if (use.max) fn(fitted$Coef.DroughtCosP, zer.drought,
+                                      aRange = 34.5, lambda = 1.2
+  ) else NULL
+  coef.droughtsin <- fn(fitted$Coef.DroughtSin, zer.drought,
+                        aRange = 32.1, lambda = 0.93
+  )
+  coef.droughtsinp <- if (use.max) fn(fitted$Coef.DroughtSinP, zer.drought,
+                                      aRange = 27.1, lambda = 1.4
+  ) else NULL
+  
+  coef.humidity <- fn(fitted$Coef.Humidity, zer
                                   , aRange = 23, lambda = 1.4
                       )
-  coef.humidityp <- if (use.max) fn(fitted$Coef.HumidityP
+  coef.humidityp <- if (use.max) fn(fitted$Coef.HumidityP, zer
                       , aRange = 34, lambda = 1.6
   ) else NULL
   
-  coef.intp <- if (use.max) fn(fitted$InterceptP
+  coef.intp <- if (use.max) fn(fitted$InterceptP, zer
                                     , aRange = 32, lambda = 0.9
   ) else NULL
   
@@ -245,12 +292,21 @@ krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
         "Humidity" = coef.humidity,
         "LSTMax" = coef.lstp,
         "HumidityMax" = coef.humidityp,
-        "InterceptMax" = coef.intp
+        "InterceptMax" = coef.intp,
+        "Drought" = coef.drought,
+        "DroughtCos" = coef.droughtcos,
+        "DroughtSin" = coef.droughtsin,
+        "DroughtMax" = coef.droughtp,
+        "DroughtCosMax" = coef.droughtcosp,
+        "DroughtSinMax" = coef.droughtsinp
       )
     } else {
       list(
         "LST" = coef.lst,
-        "Humidity" = coef.humidity
+        "Humidity" = coef.humidity,
+        "Drought" = coef.drought,
+        "DroughtCos" = coef.droughtcos,
+        "DroughtSin" = coef.droughtsin
       )
     }
   } else {
@@ -263,8 +319,9 @@ krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
       codat <- smdat %>%
         group_by(id) %>%
         summarize(
-          across(c(lon, lat, water, elevation), mean),
-          humidity_sd = sd(humidity)
+          across(c(lon, lat, water, elevation, shrubland, barren, lst), mean),
+          humidity_sd = sd(humidity),
+          humidity = mean(humidity)
         ) %>%
         drop_na %>%
         ungroup()
@@ -272,26 +329,108 @@ krig.anom <- function(indat, rtn.model=FALSE, use.max=FALSE) {
       # Now, predict all of the coefficients.
       codat$lstco <- predict(coef.lst, xer(codat), XMat=zer(codat))[,1]
       codat$humco <- predict(coef.humidity, xer(codat), XMat=zer(codat))[,1]
+      codat$droughtco <- predict(coef.drought, xer(codat), XMat=zer.drought(codat))[,1]
+      codat$droughtcosco <- predict(coef.droughtcos, xer(codat), XMat=zer.drought(codat))[,1]
+      codat$droughtsinco <- predict(coef.droughtsin, xer(codat), XMat=zer.drought(codat))[,1]
+      codat$droughtpco <- if (use.max) predict(coef.droughtp, xer(codat), XMat=zer.drought(codat))[,1] else NULL
+      codat$droughtcospco <- if (use.max) predict(coef.droughtcosp, xer(codat), XMat=zer.drought(codat))[,1] else NULL
+      codat$droughtsinpco <- if (use.max) predict(coef.droughtsinp, xer(codat), XMat=zer.drought(codat))[,1] else NULL
       codat$lstpco <- if (use.max) predict(coef.lstp, xer(codat), XMat=zer(codat))[,1] else NULL
       codat$humpco <- if (use.max) predict(coef.humidityp, xer(codat), XMat=zer(codat))[,1] else NULL
       codat$intpco <- if (use.max) predict(coef.intp, xer(codat), XMat=zer(codat))[,1] else NULL
 
       # Finally, compute the estimated anomaly.
-      smdat <- left_join(smdat, codat, by="id") %>%
+      smdat <- left_join(smdat, select(codat, -lst, -humidity), by="id") %>%
+        mutate(costs = cos(day * 2 * pi / 365),
+               sints = sin(day * 2 * pi / 365)) %>%
         (\(y) { if (use.max) {
           mutate(y,
-          temp.anom = lst * lstco + humidity * humco,
-          temp.plus = intpco + lst * lstpco + humidity * humpco
+          temp.anom = lst * lstco + humidity * humco + drought * droughtco +
+            drought * costs * droughtcosco + drought * sints * droughtsinco,
+          temp.plus = intpco + lst * lstpco + humidity * humpco + drought * droughtpco +
+            drought * costs * droughtcospco + drought * sints * droughtsinpco
           )
         } else {
           mutate(y,
-                 temp.anom = lst * lstco + humidity * humco)
+                 temp.anom = lst * lstco + humidity * humco + drought * droughtco +
+                   drought * costs * droughtcosco + drought * sints * droughtsinco)
         }
         })
       
       select(smdat, id, date, temp.anom, any_of("temp.plus"))
     }
   }
+}
+
+# Baseline cosine timeseries (main sine in three-sine).
+costs <- \(day) cos((day - 210) * 2 * pi / 365)
+
+build.ssn.preds <- function(data, fit3s) {
+  # fit3s: Are we fitting three-sine coefficients (training) or only estimating them (prediction)?
+  data$day <- as.integer(format(data$date, "%j"))
+  data %>%
+    group_by(id, day) %>%
+    summarize(
+      # Static variables - first
+      across(c(lon, lat, elevation, date,
+               water, grassland, shrubland, barren), first),
+      # Dynamic variables - mean
+      across(c(lst, humidity, any_of("temperature")), ~mean(.x, na.rm=TRUE)),
+      .groups = "drop"
+    ) %>%
+    group_by(id) %>%
+    arrange(day) %>%
+    mutate(
+      # Lots of computed covariates here.  Maxima/minima, annual amplitudes, etc.
+      maxT = max(lst, na.rm=T),
+      minT = min(lst, na.rm=T),
+      amphum = 
+        # safely(\() 
+                      lm(humidity ~ costs(day))$coefficients[[2]], 
+                      # otherwise=NA)()$result,
+      meanT = mean(lst, na.rm=T),
+      mean_hum = mean(humidity, na.rm=T),
+      # Days below freezing
+      freeze_days = sum(lst < 0, na.rm=T),
+      # Cumulative degree-days
+      # cdd = cumsum(lst, na.rm=T)
+      # Weird thing accounts for missing days:
+      # 1. Cumulative sum, ignoring NAs (-->0)
+      # 2. Mean value based on non-NAs only
+      # 3. Multiply cumulative mean by day of year
+      cdd = cumsum(case_match(lst, NA ~ 0, .default = lst)) / cumsum(!is.na(lst)) * day
+    ) %>%
+    group_modify( ~ {
+      if (fit3s) {
+        # Add fitted three-sine coefficients for training.
+        view <- .x  # This is included for debugging purposes.
+        cbind(.x, fit.sins(.x))
+      } else
+        .x
+    }) %>%
+    group_by(id, month = format(date, "%m")) %>%
+    summarize(
+      # Monthly means - or just the first values for static quantities
+      across(-c(lst, humidity, cdd, day, any_of("temperature")), first),
+      across(c(lst, humidity, cdd), ~mean(.x, na.rm=TRUE)),
+      .groups = "drop"
+    ) %>%
+    ungroup() %>%
+    pivot_wider(names_from = "month", values_from = c("lst", "humidity", "cdd"),
+                id_cols = id, unused_fn = first) %>%
+    drop_na(
+      # All required columns
+      id, lat, lon, elevation,
+      water, grassland, barren, shrubland,
+      minT, maxT, amphum, freeze_days,
+      lst_05, lst_09, lst_10,
+      humidity_01, humidity_03, humidity_05, humidity_07, humidity_08,
+      humidity_09, humidity_11,
+      cdd_09, cdd_10
+    ) %>%
+    (\(x) {if (fit3s) drop_na(x,
+                              Intercept, Amplitude, FallWinter, SpringSummer, WinterDay
+    ) else x})
 }
 
 krig.ssn <- function(indat, rtn.model=FALSE, ...) {
@@ -309,8 +448,6 @@ krig.ssn <- function(indat, rtn.model=FALSE, ...) {
   # This implementation is based on the "three-sine" annual temperature cycle function
   # from Philippus, Corona and Hogue (2024): https://doi.org/10.1111/1752-1688.13228
 
-  # Baseline cosine timeseries (main sine in three-sine).
-  costs <- \(day) cos((day - 210) * 2 * pi / 365)
 
   # We need coverage for some months, but not all, for use in coefficient estimation.
   # Make sure the training data has them.
@@ -322,68 +459,7 @@ krig.ssn <- function(indat, rtn.model=FALSE, ...) {
     stop("Missing months in training data; some data from each month are required")
 
   # Preprocessing.
-  preproc <- function(data, fit3s) {
-    # fit3s: Are we fitting three-sine coefficients (training) or only estimating them (prediction)?
-    data %>%
-      group_by(id, day) %>%
-      summarize(
-        # Static variables - first
-        across(c(lon, lat, elevation, date,
-                 water, grassland, shrubland, barren), first),
-        # Dynamic variables - mean
-        across(c(lst, humidity, any_of("temperature")), ~mean(.x, na.rm=TRUE))
-      ) %>%
-      group_by(id) %>%
-      arrange(day) %>%
-      mutate(
-        # Lots of computed covariates here.  Maxima/minima, annual amplitudes, etc.
-        maxT = max(lst, na.rm=T),
-        minT = min(lst, na.rm=T),
-        amphum = safely(\() lm(humidity ~ costs(day))$coefficients[[2]],
-                        otherwise=NA)()$result,
-        meanT = mean(lst, na.rm=T),
-        mean_hum = mean(humidity, na.rm=T),
-        # Days below freezing
-        freeze_days = sum(lst < 0, na.rm=T),
-        # Cumulative degree-days
-        # cdd = cumsum(lst, na.rm=T)
-        # Weird thing accounts for missing days:
-        # 1. Cumulative sum, ignoring NAs (-->0)
-        # 2. Mean value based on non-NAs only
-        # 3. Multiply cumulative mean by day of year
-        cdd = cumsum(case_match(lst, NA ~ 0, .default = lst)) / cumsum(!is.na(lst)) * day
-      ) %>%
-      group_modify( ~ {
-        if (fit3s) {
-          # Add fitted three-sine coefficients for training.
-          view <- .x  # This is included for debugging purposes.
-          cbind(.x, fit.sins(.x))
-        } else
-          .x
-      }) %>%
-      group_by(id, month = format(date, "%m")) %>%
-      summarize(
-        # Monthly means - or just the first values for static quantities
-        across(-c(lst, humidity, cdd, day, any_of("temperature")), first),
-        across(c(lst, humidity, cdd), ~mean(.x, na.rm=TRUE))
-      ) %>%
-      ungroup() %>%
-      pivot_wider(names_from = "month", values_from = c("lst", "humidity", "cdd"),
-                  id_cols = id, unused_fn = first) %>%
-      drop_na(
-        # All required columns
-        id, lat, lon, elevation,
-        water, grassland, barren, shrubland,
-        minT, maxT, amphum, freeze_days,
-        lst_05, lst_09, lst_10,
-        humidity_01, humidity_03, humidity_05, humidity_07, humidity_08,
-        humidity_09, humidity_11,
-        cdd_09, cdd_10
-      ) %>%
-      (\(x) {if (fit3s) drop_na(x,
-        Intercept, Amplitude, FallWinter, SpringSummer, WinterDay
-      ) else x})
-  }
+  preproc <- build.ssn.preds
 
   # Prepare training data
   train <- preproc(indat, TRUE)
@@ -505,7 +581,7 @@ fit.sins <- function(data, mod=FALSE, aic=FALSE,
     drop_na() %>%
     arrange(day)
   
-  if (nrow(inp) < 180) {
+  if (nrow(inp) < 90) {
     warning("Insufficient data coverage for 3-sine fit")
     erv
   } else {
