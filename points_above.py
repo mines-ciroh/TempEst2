@@ -9,6 +9,7 @@ import numpy as np
 import shapely as shp
 import geopandas as gpd
 from pynhd import NLDI
+import pandas as pd
 nldi = NLDI()
 
 # This is the HRRR projection for convenience.
@@ -134,4 +135,61 @@ def points_above_all(sites, site_type, N, resolution=1000, id_bases=None):
     return [site_row for
             site_set in all_sites for
             site_row in site_set]
+
+def full_network(site, site_type, id_base, distance, reach_fraction = 1,
+                 site_fraction = 1,
+                      return_df=False):
+    """
+    Retrieve *approximately* evenly-spaced points upstream of the given site.
+
+    Parameters
+    ----------
+    site : string or tuple of floats
+        Site location. Either a USGS/COMID string or tuple of
+        (longitude, latitude) identifying the downstream point. COMID
+        strings are just the ID, not any prefix. USGS should be USGS-<id>.
+    site_type : str
+        The type of site identifier. "usgs", "comid" or "coordinates".
+    distance : int
+        How far upstream to look in km.
+    id_base : str
+        Base name for point IDs.
+    reach_fraction : float
+        What proportion of reaches to select (allows management of intractably large results).
+    site_fraction : float
+        What proportion of points to select from each reach (allows management of intractably large results).
+    return_df : Bool, optional
+        Return the dataframe instead of TE2-style points. The default is False.
+        This is useful if you want to work with the results in Python.
+
+    Returns
+    -------
+    list of [[longitude, latitude], point_id].
+
+    """
+    if site_type == "coordinates":
+        nav = nldi.navigate_byloc(site, "upstreamTributaries", "flowlines", distance=distance)
+    else:
+        source_typ = "nwissite" if site_type == "usgs" else "comid"
+        nav = nldi.navigate_byid(source_typ, site, "upstreamTributaries", "flowlines",
+                                 distance=distance)
+    if reach_fraction < 1:
+        nav = nav.sample(frac=reach_fraction)
+
+    coords = pd.DataFrame([
+        {"lat": co[1], "lon": co[0], "site_id": f"{id_base}_{row.nhdplus_comid}_{index}",
+         "reach": row.nhdplus_comid}
+        for row in nav.itertuples()
+        for (index, co) in enumerate(row.geometry.coords)
+        ])
+
+    if site_fraction < 1:
+        coords = coords.groupby("reach").sample(frac = site_fraction)
+
+    if return_df:
+        return coords
+    return [
+        [[x.lon, x.lat], x.site_id]
+        for x in coords.itertuples()
+        ]
     

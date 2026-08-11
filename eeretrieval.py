@@ -17,13 +17,14 @@ import datetime as dt
 # Import a data points list with format:
 # [[[lon, lat], gage ID]], e.g.
 # datapts =  [[[-74.9658333,39.41916667], "01412000"]]
-from datapts import datapts
+# from datapts import datapts
+from points_above import points_above_all, full_network
 
 # Trigger the authentication flow.
 # ee.Authenticate()
 
 # Initialize the library.  It is now necessary to specify a Google Cloud project (this is still free for academic use).
-ee.Initialize(project='YOUR_CLOUD_PROJECT_HERE')
+ee.Initialize(project='earthenginestuff')
 
 """# Temperature Retrieval Setup
 
@@ -59,6 +60,7 @@ landcover = ee.ImageCollection("ESA/WorldCover/v100").first()
 LST = ee.ImageCollection("MODIS/061/MOD11A1")
 precip = ee.ImageCollection('ECMWF/ERA5/DAILY').select('total_precipitation')
 Ecoregions = ee.FeatureCollection('EPA/Ecoregions/2013/L3')
+Drought = ee.ImageCollection("GRIDMET/DROUGHT");
 
 
 def getEcoregion(pt):
@@ -126,10 +128,28 @@ def getPtData(pt, id, year, time, start, end, inner=500, outer=1500):
       "date": start,
       "elevation": ee.Number(getBuffered(DEM, "dem", pt, inner)),
       "lst": ee.Number(getBuffered(LST, "LST_Day_1km", pt, inner, start, end)).multiply(0.02).subtract(273.15),
-      "humidity": ee.Number(getBuffered(humidity, "specific_humidity", pt, inner, start, end))
+      "humidity": ee.Number(getBuffered(humidity, "specific_humidity", pt, inner, start, end)),
+      "drought": ee.Number(getBuffered(Drought, "spei1y", pt, inner, start, end))
       # "precip": ee.Number(getBuffered(precip, "total_precipitation",
       #                                   pt, inner, start, end))
   }).combine(getAbundances(pt, buffer=inner))
+
+# droughtBands = ['pdsi', 'z', 'eddi30d', 'eddi90d', 'eddi180d', 'eddi1y',
+#                 'eddi2y', 'eddi5y', 'spi30d', 'spi90d', 'spi180d', 'spi1y',
+#                 'spi2y', 'spi5y', 'spei30d', 'spei90d', 'spei180d', 'spei1y',
+#                 'spei2y', 'spei5y']
+droughtBands = ['pdsi', 'z', 'eddi30d', 'eddi90d', 'eddi1y',
+                'spei30d', 'spei90d', 'spei180d', 'spei1y']
+droughtCols = ["id", "date"] + droughtBands
+
+def getPtDrought(pt, id, year, time, start, end, inner=500, outer=1500):
+  return ee.Dictionary({
+      "id": id,
+      "date": start
+      } | {
+          bandName: ee.Number(getBuffered(Drought, bandName, pt, inner, start, end))
+          for bandName in droughtBands
+          })
 
 
 def getPrecip(pt, id, year, time, start, end, inner=500, outer=1500):
@@ -146,7 +166,7 @@ def mkFeature(dict):
 def mkFc(output):
   return ee.FeatureCollection(output.map(mkFeature))
 
-cols = ["id", "date", "lat", "lon", "elevation", "lst", "humidity", "shrubland",
+cols = ["id", "date", "lat", "lon", "elevation", "lst", "humidity", "drought", "shrubland",
         "grassland",
         "barren", "water"]
 
@@ -231,7 +251,6 @@ def getAllTimeseries(pts, times, basename, folder, prt=False, wait=None,
             sleep(wait)
     except KeyboardInterrupt:
         print("Manually interrupted")
-        raise KeyboardInterrupt
         break
     except Exception as err:
         print(err)
@@ -254,17 +273,40 @@ def getAllTimeseries(pts, times, basename, folder, prt=False, wait=None,
 
 # Note that max jobs are 3000.
 
+times_drt = [(str(x), str(y+1),
+          str(dt.date(x, 1, 1) + dt.timedelta(y)),
+          str(dt.date(x, 1, 1) + dt.timedelta(y+7)))
+           for x in range(2001, 2027)
+           for y in range(0, 365, 7)]
 times = [(str(x), str(y+1),
           str(dt.date(x, 1, 1) + dt.timedelta(y)),
-          str(dt.date(x, 1, 1) + dt.timedelta(y+1)))
-           for x in range(2001, 2024)
-           for y in range(365)]
+          str(dt.date(x, 1, 1) + dt.timedelta(y+7)))
+           for x in range(2001, 2027)
+           for y in range(0, 366)]
 
 # 20 seconds works for 1300 points.  Scale accordingly.  The goal of the wait
 # is to avoid exceeding 3000 jobs.
 if __name__ == "__main__":
-    getAllTimeseries(datapts,
-        times, "AllData", "AFolder", prt=True, wait=10)
+    maxN = 10
+    # for i in range(maxN):
+    # sites = ["USGS-09180000", "USGS-09315000", "USGS-10129900", "USGS-08279500", "USGS-09504950",
+    #          "USGS-10261500", "USGS-14103000", "USGS-06040050", "USGS-06285100"]
+    # id_bases = ["DoloresRiver", "GreenRiver", "SilverCreek", "RioGrande",
+    #             "VerdeRiver", "MojaveRiver", "DeschutesRiver", "MadisonRiver",
+    #             "ShoshoneRiver"]
+    # datapts = points_above_all(sites, "usgs", 100, 1000, id_bases)
+    # The UCRB has a total of 2,673,605 sites that come up on NLDI. We can handle about
+    # 10,000 of those, or 1/250. This can be 1/10 points in 1/25 reaches, though in practice
+    # 1/20 reaches suffices.
+    co_pour = "USGS-09380000"
+    datapts = full_network(co_pour, "usgs", "UCRB", 1000, reach_fraction = 1/25,
+                           site_fraction = 1/10, False)
+    for i in range(maxN):
+        getAllTimeseries(datapts[i::maxN],
+            times, f"TE{i}_", "DroughtAll", prt=True, wait=30)
+    # getAllTimeseries(datapts,
+    #     times_drt, "Drought", "DroughtRivers", prt=True, wait=30, retrieve=getPtDrought,
+    #     cols=droughtCols)
     # runEcoregions(datapts, "", "Ecoregions")
     # Point-focused version...
     # maxN = 3
